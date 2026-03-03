@@ -1,0 +1,15 @@
+\chapter{Conclusioni e sviluppi futuri}
+
+In conclusione, questo lavoro ha reso concretamente eseguibile il linguaggio \emph{Racing Choreographies}. La tesi ha prodotto un tool che consente di scrivere ed eseguire programmi in Racing Choreographies con meccanismi di diagnostica (\emph{trace}), gestione degli errori e interfaccia CLI. Questo tool costituisce una base stabile e ha la proprietà di essere modulare; ciò consente di estenderlo in futuro in modo da allinearlo alla specifica teorica completa del linguaggio.
+
+Gli sviluppi futuri sono molteplici. Un primo passo rilevante è l’introduzione delle regole di \emph{delay} e dell’analisi di indipendenza basata su condizioni di Bernstein, così da supportare la semantica di massimo parallelismo e studiare in modo più fedele l’interazione tra \texttt{race} e riordinamento di azioni indipendenti.
+
+Successivamente si può estendere la validazione statica oltre i controlli strutturali attuali, implementando condizioni di \emph{well-formedness}, come ad esempio:
+
+\begin{itemize}
+    \item l’uso lineare degli identificatori di race;
+    \item i vincoli sul \texttt{discharge};
+    \item l’assenza di configurazioni problematiche come i \emph{ghost cycles}.
+\end{itemize}
+
+Un ulteriore obiettivo è l’implementazione dell’Endpoint Projection (EPP) e del calcolo target, così da passare dalla sola simulazione globale alla generazione e verifica di comportamenti locali.

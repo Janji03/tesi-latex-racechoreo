@@ -1,0 +1,388 @@
+\chapter{Background teorico}
+
+\section{Il linguaggio Racing Choreographies}
+
+Racing Choreographies è l’estensione di un linguaggio coreografico con l’obiettivo di integrare nel modello globale un costrutto esplicito di competizione tra processi.
+
+Il linguaggio permette di avere:
+
+\begin{itemize}
+    \item definizioni di procedure
+    \item coreografie composte da istruzioni, chiamate di procedura e costrutti di controllo locali o su esito di race
+    \item un insieme di espressioni elementari
+    \item comunicazioni
+    \item selezioni di etichetta
+    \item assegnamenti locali
+\end{itemize}
+
+A queste si aggiunge il costrutto di race, che rappresenta l’estensione principale del modello.
+
+La race descrive una competizione tra due processi che tentano di inviare un valore a un processo ricevente. Si formalizzano tre aspetti distinti:
+
+\begin{itemize}
+    \item Determinazione del vincitore ossia quale processo riesce a consegnare per primo il proprio valore.
+    \item Memorizzazione dell’esito associata a un identificatore di race.
+    \item Gestione del perdente il cui valore non viene scartato ma conservato per una successiva sincronizzazione.
+\end{itemize}
+
+La semantica operazionale è definita su configurazioni globali che includono:
+
+\begin{itemize}
+    \item la coreografia residua;
+    \item uno store delle variabili localizzate;
+    \item una struttura ausiliaria per la gestione delle race.
+\end{itemize}
+
+Le regole operazionali descrivono come le configurazioni evolvono in seguito all’esecuzione di interazioni, condizionali, chiamate ricorsive e race.
+
+Un elemento importante del linguaggio è la presenza di regole che introducono parallelismo in quanto consentono l’esecuzione di azioni indipendenti in ordine non strettamente sequenziale. Questo è formalizzato tramite:
+
+\begin{itemize}
+    \item nozioni di lettura e scrittura delle variabili;
+    \item condizioni di indipendenza tra azioni;
+    \item regole di delay che permettono il riordinamento di istruzioni non interferenti.
+\end{itemize}
+
+Il linguaggio introduce inoltre condizioni di Well-formedness. Queste proprietà assicurano che le coreografie siano semanticamente coerenti rispetto al meccanismo di competizione tra cui: uso lineare degli identificatori di race; vincoli strutturali che garantiscono che ogni processo perdente venga correttamente sincronizzato; assenza di configurazioni inconsistenti nella gestione delle race.
+
+Il linguaggio include anche un calcolo target che rappresenta una possibile semantica a livello di processi locali e una definizione di Endpoint Projection (EPP) che associa a ogni processo la parte di comportamento che lo riguarda. La proiezione garantisce che il comportamento locale risultante preservi la struttura della coreografia definita a livello globale.
+
+Nelle sezioni successive verranno analizzate nel dettaglio la sintassi astratta e la semantica operazionale.
+
+\section{Sintassi astratta}
+
+La sintassi astratta descrive la struttura formale dei programmi indipendentemente dalla loro rappresentazione concreta. Essa definisce le categorie sintattiche del linguaggio e le modalità con cui i costrutti possono essere composti.
+
+\subsection*{Programmi}
+
+Un programma è composto da zero o più definizioni di procedure seguite da una coreografia principale:
+
+\[
+P ::= D^* \; ; \; C
+\]
+
+dove $D^*$ indica una sequenza (eventualmente vuota) di definizioni di procedura e $C$ rappresenta la coreografia principale.
+
+\subsection*{Definizioni di procedura}
+
+Una procedura è identificata da un nome $X$, da una tupla di processi partecipanti e da un corpo espresso come coreografia:
+
+\[
+D ::= X(\bar{p}) = C
+\]
+
+dove $\bar{p}$ rappresenta la tupla dei processi coinvolti nella procedura.
+
+\subsection*{Coreografie}
+
+Le coreografie descrivono il comportamento globale del sistema e sono definite dalla seguente grammatica:
+
+\[
+\begin{array}{rcl}
+C &::=& I \; ; \; C \\
+  &\mid& \text{if } p.e \text{ then } C \text{ else } C \\
+  &\mid& \text{if } s[k] \text{ then } C \text{ else } C \\
+  &\mid& X(\bar{p}) \\
+  &\mid& 0
+\end{array}
+\]
+
+Una coreografia può quindi essere:
+
+\begin{itemize}
+    \item un’istruzione seguita da un’altra coreografia;
+    \item un condizionale basato sulla valutazione locale di un’espressione $p.e$;
+    \item un condizionale basato sull’esito di una race identificata da $s[k]$;
+    \item una chiamata di procedura;
+    \item il termine $0$, che rappresenta la terminazione.
+\end{itemize}
+
+\subsection*{Istruzioni}
+
+Le istruzioni costituiscono le azioni elementari della coreografia:
+
+\[
+\begin{array}{rcl}
+I &::=& p.e \rightarrow q.x \\
+  &\mid& p \rightarrow q[l] \\
+  &\mid& p.x = e \\
+  &\mid& s[k] : p.e \; q.e' \; \perp \; s.x \\
+  &\mid& s[k] : p \Rightarrow s.x
+\end{array}
+\]
+
+Le forme rappresentano rispettivamente:
+
+\begin{itemize}
+    \item comunicazione di un valore dal processo $p$ al processo $q$;
+    \item selezione di etichetta;
+    \item assegnamento locale;
+    \item race tra due processi $p$ e $q$ con ricevente $s$;
+    \item discharge del processo perdente della race.
+\end{itemize}
+
+\subsection*{Espressioni}
+
+Le espressioni sono limitate a valori e variabili:
+
+\[
+e ::= v \mid x
+\]
+
+dove $v$ rappresenta un valore e $x$ una variabile localizzata.
+
+\subsection*{Metavariabili}
+
+Le metavariabili utilizzate nella definizione sintattica sono:
+
+\begin{itemize}
+    \item $p,q,r,s$: processi;
+    \item $\bar{p}$: tupla di processi;
+    \item $x$: variabile locale a un processo;
+    \item $v$: valore;
+    \item $l$: etichetta;
+    \item $k$: identificatore di race;
+    \item $X$: nome di procedura.
+\end{itemize}
+
+\section{Semantica operazionale}
+
+Per l’esecuzione del linguaggio è stata definita una semantica operativa semplificata, progettata per essere direttamente implementabile tramite una macchina astratta.
+
+La configurazione globale assume la forma:
+
+\[
+C, \Sigma, M
+\]
+
+dove:
+
+\begin{itemize}
+    \item $C$ è la coreografia residua;
+    \item $\Sigma$ è lo store delle variabili localizzate;
+    \item $M$ è una memoria esplicita delle race.
+\end{itemize}
+
+La relazione di transizione è:
+
+\[
+C, \Sigma, M \longrightarrow C', \Sigma', M'
+\]
+
+\subsection*{Race}
+
+\textbf{Regola $\langle l\text{race} \rangle$}
+
+Premesse:
+\[
+s[k] \notin dom(M)
+\]
+\[
+\Sigma(p,e) \downarrow v
+\]
+\[
+\Sigma(q,e') \downarrow v'
+\]
+
+Transizione:
+\[
+C, \Sigma, M, \; s[k] : p.e \; q.e' \perp s.d ; C
+\longrightarrow
+C, \Sigma[s.d \mapsto v], M[s[k] \mapsto (L,R,v,v')]
+\]
+
+Se la race identificata da $s[k]$ non è ancora presente in $M$ e le espressioni vengono valutate rispettivamente a $v$ e $v'$, allora nel caso di vittoria del lato sinistro viene assegnato a $s.d$ il valore $v$. In $M$ viene memorizzata una tupla contenente l’informazione sul vincitore ($L$), sul perdente ($R$), sul valore vincente e sul valore perdente.
+
+\textbf{Regola $\langle r\text{race} \rangle$}
+
+Premesse: 
+\[
+s[k] \notin dom(M)
+\]
+\[
+\Sigma(p,e) \downarrow v
+\]
+\[
+\Sigma(q,e') \downarrow v'
+\]
+
+\[
+C, \Sigma, M, \; s[k] : p.e \; q.e' \perp s.d ; C
+\longrightarrow
+C, \Sigma[s.d \mapsto v'], M[s[k] \mapsto (R,L,v',v)]
+\]
+
+Nel caso di vittoria del lato destro, viene assegnato a $s.d$ il valore $v'$ e in $M$ viene registrata la tupla corrispondente con indicazione del lato vincitore e dei valori coinvolti.
+
+\subsection*{Comunicazione}
+
+\textbf{Regola $\langle com \rangle$}
+
+Premessa:
+\[
+\Sigma(p,e) \downarrow v
+\]
+
+Transizione:
+\[
+C, \Sigma, M, \; p.e \rightarrow q.x ; C
+\longrightarrow
+C, \Sigma[q.x \mapsto v], M
+\]
+
+Il processo $p$ valuta l’espressione $e$ ottenendo $v$. Il valore viene assegnato alla variabile $q.x$ nello store. La memoria $M$ non viene modificata.
+
+\subsection*{Selezione}
+
+\textbf{Regola $\langle sel \rangle$}
+
+\[
+C, \Sigma, M, \; p \rightarrow q[l] ; C
+\longrightarrow
+C, \Sigma, M
+\]
+
+La selezione di etichetta non modifica né lo store né la memoria delle race; l’esecuzione prosegue con la coreografia successiva.
+
+\subsection*{Assegnamento}
+
+\textbf{Regola $\langle asg \rangle$}
+
+Premessa:
+\[
+\Sigma(p,e) \downarrow v
+\]
+
+Transizione:
+\[
+C, \Sigma, M, \; p.x = e ; C
+\longrightarrow
+C, \Sigma[p.x \mapsto v], M
+\]
+
+Il valore dell’espressione viene assegnato alla variabile locale $p.x$ nello store.
+
+\subsection*{Condizionali locali}
+
+\textbf{Regola $\langle cndt \rangle$}
+
+Premessa:
+\[
+\Sigma(p,e) \downarrow true
+\]
+
+Transizione:
+\[
+C, \Sigma, M, \; \text{if } p.e \text{ then } C_1 \text{ else } C_2
+\longrightarrow
+C_1, \Sigma, M
+\]
+
+Se l’espressione valutata localmente è vera, viene selezionato il ramo then.
+
+\textbf{Regola $\langle cndf \rangle$}
+
+Premessa:
+\[
+\Sigma(p,e) \downarrow false
+\]
+
+Transizione:
+\[
+C, \Sigma, M, \; \text{if } p.e \text{ then } C_1 \text{ else } C_2
+\longrightarrow
+C_2, \Sigma, M
+\]
+
+Se l’espressione è falsa, viene selezionato il ramo else.
+
+\subsection*{Condizionali su race}
+
+\textbf{Regola $\langle rcndt \rangle$}
+
+Premesse:
+\[
+s[k] \in dom(M)
+\]
+\[
+M[s[k]] = (L, \_, \_, \_)
+\]
+
+Transizione:
+\[
+C, \Sigma, M, \; \text{if } s[k] \text{ then } C_1 \text{ else } C_2
+\longrightarrow
+C_1, \Sigma, M
+\]
+
+Se la memoria indica che il lato sinistro ha vinto, viene eseguito il ramo then.
+
+\textbf{Regola $\langle rcndf \rangle$}
+
+Premesse:
+\[
+s[k] \in dom(M)
+\]
+\[
+M[s[k]] = (R, \_, \_, \_)
+\]
+
+Transizione:
+\[
+C, \Sigma, M, \; \text{if } s[k] \text{ then } C_1 \text{ else } C_2
+\longrightarrow
+C_2, \Sigma, M
+\]
+
+Se la memoria indica che ha vinto il lato destro, viene eseguito il ramo else.
+
+\subsection*{Discharge}
+
+\textbf{Regola $\langle dis \rangle$}
+
+Premesse:
+\[
+s[k] \in dom(M)
+\]
+\[
+M[s[k]] = (w, \ell, v_{win}, v_{lose})
+\]
+
+Transizione:
+\[
+C, \Sigma, M, \; \text{discharge } s[k] : \ell \rightarrow s.x ; C
+\longrightarrow
+C, \Sigma[s.x \mapsto v_{lose}], M
+\]
+
+Il valore del processo perdente, memorizzato in $M$, viene assegnato alla variabile $s.x$. La memoria $M$ non viene rimossa, ma può essere marcata come già utilizzata a livello implementativo.
+
+\subsection*{Chiamata di procedura}
+
+\textbf{Regola $\langle call \rangle$}
+
+Premessa:
+\[
+\Delta(X) = (\bar{p}_{form}, C_{body})
+\]
+
+Transizione:
+\[
+C, \Sigma, M, \; \text{call } X(\bar{p}_{act}) ; C
+\longrightarrow
+C, \Sigma, M, \; subst(C_{body}, \bar{p}_{form} \mapsto \bar{p}_{act})
+\]
+
+La chiamata di procedura viene realizzata tramite sostituzione dei parametri formali con quelli attuali nel corpo della procedura.
+
+\subsection*{Terminazione}
+
+\textbf{Regola $\langle end \rangle$}
+
+\[
+C, \Sigma, M, \; 0
+\longrightarrow
+C, \Sigma, M, \; 0
+\]
+
+La configurazione terminale non produce ulteriori transizioni.

@@ -1,0 +1,97 @@
+% !TeX root = main.tex
+\documentclass[a4paper,12pt,oneside]{report}
+
+% -------------------------
+% Encoding & language
+% -------------------------
+\usepackage[T1]{fontenc}
+\usepackage[utf8]{inputenc}
+\usepackage[italian]{babel}
+
+% -------------------------
+% Layout
+% -------------------------
+\usepackage[a4paper,margin=3cm]{geometry}
+\usepackage{setspace}
+\onehalfspacing
+
+% -------------------------
+% Graphics & tables
+% -------------------------
+\usepackage{graphicx}
+\usepackage{float}
+
+% -------------------------
+% Math
+% -------------------------
+\usepackage{amsmath, amssymb}
+
+% -------------------------
+% Code blocks
+% -------------------------
+\usepackage{listings}
+\usepackage{xcolor}
+
+\lstset{
+  basicstyle=\ttfamily\small,
+  columns=fullflexible,
+  breaklines=true,
+  frame=single,
+  showstringspaces=false
+}
+
+% -------------------------
+% Hyperlinks
+% -------------------------
+\usepackage[hidelinks]{hyperref}
+
+% -------------------------
+% Bibliography (biber)
+% -------------------------
+\usepackage[
+  backend=biber,
+  style=numeric,
+  sorting=none
+]{biblatex}
+\addbibresource{bibliografia.bib}
+
+% -------------------------
+% Document
+% -------------------------
+\begin{document}
+
+% Frontespizio
+\input{frontespizio}
+
+% Pagine iniziali numerate in romano
+\pagenumbering{roman}
+
+% Abstract
+\input{abstract}
+
+% Ringraziamenti (se vuoi ometterli per ora, commenta)
+\input{ringraziamenti}
+
+% Indice
+\tableofcontents
+\clearpage
+
+% Corpo tesi: numerazione araba
+\pagenumbering{arabic}
+
+% Capitoli
+\input{capitoli/capitolo1}
+\input{capitoli/capitolo2}
+\input{capitoli/capitolo3}
+\input{capitoli/capitolo4}
+\input{capitoli/capitolo5}
+
+% Conclusioni
+\input{capitoli/conclusioni}
+
+% Bibliografia
+\clearpage
+\nocite{*}
+\printbibliography
+
+\end{document}

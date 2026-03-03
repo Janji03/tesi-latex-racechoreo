@@ -1,0 +1,708 @@
+\chapter{Implementazione del Parser}
+
+In questo capitolo viene descritto il front-end del tool \texttt{rc\_parser}, che si occupa dell’analisi lessicale e sintattica, della costruzione di una rappresentazione interna del programma e della validazione strutturale post-parsing.
+
+Nel seguito vengono illustrate in dettaglio le scelte architetturali, l’integrazione di ANTLR nel sistema di build, la trasformazione dal parse tree all’AST, i meccanismi di validazione statica e le modalità di esposizione del tool tramite interfaccia a riga di comando.
+
+\section{Overview del sistema}
+
+Il tool \texttt{rc\_parser} è un’applicazione a riga di comando sviluppata in C++17 che implementa il front-end del linguaggio Racing Choreographies.
+
+Per la generazione automatica del lexer e del parser viene utilizzato ANTLR4 (ANother Tool for Language Recognition), un generatore di parser che, a partire da una grammatica formale, produce codice sorgente per l’analisi lessicale e sintattica in diversi linguaggi di programmazione, tra cui C++.
+
+La pipeline complessiva del sistema è la seguente:
+
+\[
+\begin{aligned}
+&\text{Input (.rc / stdin)} \\
+&\downarrow \\
+&\text{Lexer (ANTLR)} \\
+&\downarrow \\
+&\text{Parser (ANTLR)} \\
+&\downarrow \\
+&\text{Parse Tree (CST)} \\
+&\downarrow \\
+&\text{AST Builder} \\
+&\downarrow \\
+&\text{Abstract Syntax Tree (AST)} \\
+&\downarrow \\
+&\text{Validazione strutturale} \\
+&\downarrow \\
+&\text{Simulatore (Capitolo 5)}
+\end{aligned}
+\]
+
+L’input può essere fornito tramite file oppure attraverso lo standard input. Il lexer e il parser, generati automaticamente a partire dalla grammatica definita nel Capitolo 3, producono un Concrete Syntax Tree (CST) che riflette la struttura del programma secondo le regole sintattiche.
+
+Il CST viene trasformato in un Abstract Syntax Tree (AST) progettato come rappresentazione intermedia che è indipendente dalla struttura specifica della grammatica ANTLR. L’AST è fondamentale in quanto tutte le fasi successive, ovvero validazione statica e simulazione operazionale, operano esclusivamente su questa struttura.
+
+La fase di validazione strutturale verifica proprietà statiche di base del programma, come l’unicità delle definizioni di procedura e la correttezza delle chiamate rispetto all’arità dichiarata.
+
+L’architettura è quindi modulare: il codice generato da ANTLR è confinato al livello di analisi sintattica, mentre la rappresentazione interna del linguaggio e la logica di controllo sono separate. Questa separazione consente di mantenere indipendenti i livelli di grammatica, struttura dell’AST e modello di macchina astratta ed è pensata per garantire l’estendibilità del sistema.
+
+\section{Architettura del front-end}
+
+La directory principale del parser è organizzata come segue:
+
+\begin{verbatim}
+grammar/
+    RacingChoreo.g4
+
+generated/
+    RacingChoreoLexer.h/.cpp
+    RacingChoreoParser.h/.cpp
+    RacingChoreoBaseVisitor.h/.cpp
+    RacingChoreoVisitor.h/.cpp
+
+src/
+    main.cpp
+    ErrorListener.h/.cpp
+    Validation.h/.cpp
+
+    ast/
+        Ast.h
+
+    AstBuilderVisitor.h/.cpp
+    AstPrinter.h/.cpp
+    AstJson.h/.cpp
+\end{verbatim}
+
+La cartella \texttt{grammar/} contiene la specifica formale del linguaggio in formato ANTLR.
+
+Durante la fase di build, ANTLR genera automaticamente il codice C++ del lexer e del parser all’interno della directory \texttt{generated/}.
+
+Tutta la logica semantica e strutturale del linguaggio è invece implementata nella directory \texttt{src/}. In particolare:
+
+\begin{itemize}
+    \item \texttt{AstBuilderVisitor} realizza la trasformazione dal parse tree all’AST.
+    \item \texttt{ast/Ast.h} definisce la struttura tipizzata dell’Abstract Syntax Tree.
+    \item \texttt{Validation} implementa i controlli statici post-parsing.
+    \item \texttt{ErrorListener} raccoglie e struttura gli errori sintattici.
+    \item \texttt{AstPrinter} e \texttt{AstJson} forniscono modalità di visualizzazione dell’AST.
+    \item \texttt{main.cpp} gestisce l’intera pipeline e l’interfaccia a linea di comando.
+\end{itemize}
+
+La generazione del parser è integrata nel sistema di build tramite CMake. In particolare, viene definito un \texttt{add\_custom\_command} che invoca il tool ANTLR con le opzioni:
+
+\begin{verbatim}
+java -jar antlr-4.x-complete.jar
+    -Dlanguage=Cpp
+    -visitor
+    -no-listener
+    -o generated
+    RacingChoreo.g4
+\end{verbatim}
+
+L’architettura risultante è divisa in tre livelli principali:
+
+\bigskip
+
+\textbf{Sintassi (ANTLR)}  
+Lexer + Parser $\rightarrow$ CST
+
+\bigskip
+
+\textbf{Struttura (AST)}  
+AstBuilderVisitor $\rightarrow$ AST tipizzato
+
+\bigskip
+
+\textbf{Controlli statici}  
+Validator $\rightarrow$ ValidationError
+
+\bigskip
+
+Questa separazione garantisce che il parse tree non venga mai utilizzato direttamente nelle fasi semantiche, che l’AST rimanga indipendente dalla struttura interna della grammatica e che eventuali modifiche sintattiche non impattino il modello di esecuzione.
+
+\section{Analisi lessicale e sintattica}
+
+L’analisi lessicale e sintattica del linguaggio è delegata al codice generato automaticamente da ANTLR4 a partire dalla grammatica \texttt{RacingChoreo.g4}.
+
+ANTLR genera:
+
+\begin{itemize}
+    \item il lexer;
+    \item il parser;
+    \item le classi base per il pattern Visitor.
+\end{itemize}
+
+L’analisi sintattica è incapsulata nella struttura pipeline che inizializza in sequenza:
+
+\[
+\texttt{ANTLRInputStream}
+\rightarrow
+\texttt{RacingChoreoLexer}
+\rightarrow
+\texttt{CommonTokenStream}
+\rightarrow
+\texttt{RacingChoreoParser}
+\]
+
+L’entry point del parser è la regola \texttt{program}, la quale produce un \texttt{ProgramContext*} corrispondente alla radice del CST. Il risultato di questa fase è una rappresentazione del programma conforme alla grammatica.
+
+La gestione degli errori sintattici si basa sul meccanismo di error reporting fornito da ANTLR, esteso tramite un \texttt{ErrorListener}. Questo componente intercetta gli errori prodotti dal lexer o dal parser e li memorizza in una struttura interna senza interrompere immediatamente l’esecuzione.
+
+
+\section{Costruzione dell’AST}
+
+Il Concrete Syntax Tree (CST) prodotto da ANTLR riflette direttamente la struttura derivazionale della grammatica. Tale rappresentazione è adatta alla fase di parsing, ma non è adatta alle fasi successive di analisi e simulazione, in quanto dipendente dall’organizzazione delle regole sintattiche.
+
+Per questo motivo si introduce un livello intermedio esplicito: Abstract Syntax Tree (AST).
+
+\subsection*{Struttura generale dell’albero}
+
+La radice dell’AST è il nodo \texttt{Program}:
+
+\begin{verbatim}
+struct Program {
+    std::vector<std::unique_ptr<ProcDef>> procedures;
+    std::unique_ptr<Main> main;
+    SourceRange loc;
+};
+\end{verbatim}
+
+Un programma è composto da:
+
+\begin{itemize}
+    \item un insieme di definizioni di procedura (\texttt{ProcDef});
+    \item un blocco \texttt{main};
+    \item informazioni di localizzazione (\texttt{SourceRange}).
+\end{itemize}
+
+L’uso di \texttt{std::unique\_ptr} rende esplicita la proprietà gerarchica dei nodi e impedisce aliasing.
+
+\subsection*{Modellazione dei costrutti elementari}
+
+Gli identificatori sono modellati come alias di \texttt{std::string}:
+
+\begin{verbatim}
+using Process  = std::string;
+using Var      = std::string;
+using Label    = std::string;
+using ProcName = std::string;
+\end{verbatim}
+
+\subsection*{Espressioni}
+
+Il linguaggio supporta espressioni limitate a valori (\texttt{INT}, \texttt{true}, \texttt{false}) e variabili.
+
+La rappresentazione è:
+
+\begin{verbatim}
+struct Value {
+    enum class Kind { Int, Bool };
+    Kind kind;
+    int intValue = 0;
+    bool boolValue = false;
+    SourceRange loc;
+};
+
+struct ExprVar {
+    Var name;
+    SourceRange loc;
+};
+
+using Expr = std::variant<Value, ExprVar>;
+\end{verbatim}
+
+\subsection*{Riferimenti localizzati}
+
+Per modellare espressioni e variabili qualificate da processo:
+
+\begin{verbatim}
+struct ProcExpr {
+    Process process;
+    Expr expr;
+    SourceRange loc;
+};
+
+struct ProcVar {
+    Process process;
+    Var var;
+    SourceRange loc;
+};
+\end{verbatim}
+
+Per identificare una race:
+
+\begin{verbatim}
+struct RaceId {
+    Process process;
+    std::string key;
+    SourceRange loc;
+};
+\end{verbatim}
+
+Queste strutture rappresentano direttamente le forme sintattiche: \texttt{p.e}, \texttt{p.x}, \texttt{s[k]}.
+
+\subsection*{Istruzioni}
+
+Le istruzioni sono modellate come un tipo somma:
+
+\begin{verbatim}
+using Interaction = std::variant<
+    Comm,
+    Select,
+    Assign,
+    Race,
+    Discharge
+>;
+\end{verbatim}
+
+Ogni istruzione è definita come struttura autonoma, ad esempio:
+
+\begin{verbatim}
+struct Race {
+    RaceId id;
+    ProcExpr left;
+    ProcExpr right;
+    ProcVar target;
+    SourceRange loc;
+};
+\end{verbatim}
+
+\subsection*{Statement e controllo di flusso}
+
+\begin{verbatim}
+using Stmt = std::variant<
+    InteractionStmt,
+    CallStmt,
+    IfLocalStmt,
+    IfRaceStmt
+>;
+\end{verbatim}
+
+I costrutti condizionali contengono blocchi annidati:
+
+\begin{verbatim}
+struct IfLocalStmt {
+    ProcExpr condition;
+    std::unique_ptr<Block> thenBlock;
+    std::unique_ptr<Block> elseBlock;
+    SourceRange loc;
+};
+\end{verbatim}
+
+L’uso di \texttt{std::unique\_ptr<Block>} esprime la struttura gerarchica dell’albero.
+
+\subsection*{Struttura dei blocchi}
+
+\begin{verbatim}
+struct Block {
+    std::vector<std::unique_ptr<Stmt>> statements;
+    SourceRange loc;
+};
+\end{verbatim}
+
+\subsection*{Costruzione dell’AST (CST → AST)}
+
+La trasformazione dal parse tree all’AST è implementata in:
+
+\begin{verbatim}
+src/AstBuilderVisitor.h
+src/AstBuilderVisitor.cpp
+\end{verbatim}
+
+La classe principale è:
+
+\begin{verbatim}
+class AstBuilderVisitor final : public RacingChoreoBaseVisitor
+\end{verbatim}
+
+La costruzione avviene tramite metodi dedicati:
+
+\begin{verbatim}
+std::unique_ptr<ast::Program> buildProgram(...);
+std::unique_ptr<ast::Block>   buildBlock(...);
+std::unique_ptr<ast::Stmt>    buildStmt(...);
+ast::Interaction              buildInteraction(...);
+ast::Race                     buildRace(...);
+\end{verbatim}
+
+La trasformazione implementa:
+
+\begin{itemize}
+    \item mapping esplicito tra regole ANTLR e nodi AST;
+    \item eliminazione di nodi intermedi non rilevanti semanticamente;
+    \item costruzione manuale delle varianti (\texttt{std::variant});
+    \item inizializzazione sistematica del campo \texttt{loc}.
+\end{itemize}
+
+Ad esempio, la costruzione di un valore intero avviene tramite:
+
+\begin{verbatim}
+val.kind = ast::Value::Kind::Int;
+val.intValue = std::stoi(vctx->INT()->getText());
+\end{verbatim}
+
+La propagazione delle informazioni di localizzazione è garantita dal fatto che ogni nodo riceve una \texttt{SourceRange} costruita a partire da:
+
+\begin{verbatim}
+ctx->getStart();
+ctx->getStop();
+\end{verbatim}
+
+Il visitor mantiene il nome del file sorgente e assegna:
+
+\begin{verbatim}
+node.loc = locFrom(ctx);
+\end{verbatim}
+
+\section{Validazione post-parsing}
+
+La fase di validazione strutturale viene eseguita immediatamente dopo la costruzione dell’AST e prima dell’invocazione del simulatore.
+
+La classe principale è:
+
+\begin{verbatim}
+class Validator final {
+public:
+    std::vector<ValidationError> validate(const ast::Program& program);
+};
+\end{verbatim}
+
+Gli errori sono rappresentati tramite:
+
+\begin{verbatim}
+struct ValidationError {
+    std::string file;
+    uint32_t line;
+    uint32_t col;
+    std::string message;
+};
+\end{verbatim}
+
+Questa struttura riutilizza le informazioni di localizzazione propagate nell’AST (\texttt{SourceRange}).
+
+La validazione si articola in due fasi principali:
+
+\begin{enumerate}
+    \item \texttt{validateProcTable(program);}
+    \item \texttt{validateProgramBody(program);}
+\end{enumerate}
+
+\subsection*{1) Costruzione della tabella delle procedure}
+
+Durante la prima fase viene costruita una tabella interna:
+
+\begin{verbatim}
+std::unordered_map<std::string, ProcInfo> procs_;
+
+struct ProcInfo {
+    size_t arity;
+    ast::SourceRange loc;
+};
+\end{verbatim}
+
+Per ogni \texttt{ProcDef} vengono registrati:
+
+\begin{itemize}
+    \item nome della procedura;
+    \item arità (numero di parametri);
+    \item posizione nel sorgente.
+\end{itemize}
+
+Viene verificata l’unicità del nome:
+
+\begin{verbatim}
+if (it != procs_.end()) {
+    addError(p->loc, "duplicate procedure ...");
+}
+\end{verbatim}
+
+Questa verifica garantisce che il programma non contenga definizioni multiple con lo stesso identificatore.
+
+\subsection*{2) Verifica delle chiamate di procedura}
+
+Durante l’attraversamento dell’AST vengono controllate le istruzioni \texttt{CallStmt}:
+
+\begin{verbatim}
+if (it == procs_.end()) {
+    addError(node.loc, "call to undefined procedure ...");
+}
+\end{verbatim}
+
+e successivamente la correttezza dell’arità:
+
+\begin{verbatim}
+if (expected != got) {
+    addError(node.loc, "wrong number of arguments ...");
+}
+\end{verbatim}
+
+Vengono quindi garantite due proprietà:
+
+\begin{itemize}
+    \item ogni procedura chiamata è stata definita;
+    \item il numero di argomenti è coerente con la definizione.
+\end{itemize}
+
+La validazione viene applicata all’intero programma attraversando ricorsivamente l’AST a partire da \texttt{validateProgramBody}.
+
+La visita procede in tre passi:
+
+\begin{itemize}
+    \item per ogni \texttt{ProcDef}, viene validato il blocco \texttt{body};
+    \item viene validato il blocco \texttt{main};
+    \item ogni \texttt{Block} viene percorso sequenzialmente tramite \texttt{validateBlock}.
+\end{itemize}
+
+\begin{verbatim}
+for (const auto& p : program.procedures) {
+    validateBlock(*p->body);
+}
+validateBlock(*program.main->body);
+\end{verbatim}
+
+La funzione \texttt{validateBlock} invoca \texttt{validateStmt} su ciascuno statement:
+
+\begin{verbatim}
+for (const auto& st : b.statements) {
+    validateStmt(*st);
+}
+\end{verbatim}
+
+Poiché \texttt{Stmt} è uno \texttt{std::variant}, la distinzione tra i diversi tipi di istruzione avviene tramite \texttt{std::visit}.
+
+Nel caso dei costrutti condizionali (\texttt{IfLocalStmt}, \texttt{IfRaceStmt}), la validazione prosegue ricorsivamente sui blocchi \texttt{then} ed \texttt{else}:
+
+\begin{verbatim}
+validateBlock(*node.thenBlock);
+validateBlock(*node.elseBlock);
+\end{verbatim}
+
+\section{Gestione degli errori}
+
+La gestione degli errori nel tool \texttt{rc\_parser} è strutturata su tre livelli distinti:
+
+\begin{itemize}
+    \item errori lessicali e sintattici (ANTLR);
+    \item errori di validazione strutturale (Validator);
+    \item errori runtime (Capitolo 5).
+\end{itemize}
+
+\subsection*{Errori sintattici}
+
+Gli errori generati da ANTLR vengono intercettati tramite un \texttt{ErrorListener} che non stampa direttamente l’errore ma lo accumula. Esso viene installato su lexer e parser nella pipeline, sostituendo i listener di default.
+
+\begin{verbatim}
+class ErrorListener final : public antlr4::BaseErrorListener
+\end{verbatim}
+
+Gli errori sintattici sono rappresentati tramite:
+
+\begin{verbatim}
+struct SyntaxError {
+    std::string file;
+    size_t line;
+    size_t column;
+    std::string message;
+    std::string offendingText;
+};
+\end{verbatim}
+
+\subsection*{Errori strutturali}
+
+Gli errori vengono raccolti in un vettore e restituiti al chiamante:
+
+\begin{verbatim}
+struct ValidationError {
+    std::string file;
+    uint32_t line;
+    uint32_t col;
+    std::string message;
+};
+\end{verbatim}
+
+Il tool supporta due modalità di output:
+
+\begin{itemize}
+    \item modalità testuale: stampa file, riga, colonna, messaggio di errore ed eventualmente lo snippet di codice con caret di evidenziazione;
+    \item modalità JSON (\texttt{--json}): produce una struttura stabile contenente i campi \texttt{errors} e \texttt{validationErrors}.
+\end{itemize}
+
+Gli exit code si distinguono in:
+
+\begin{itemize}
+    \item 0 in caso di esecuzione corretta;
+    \item 1 in presenza di errori di parsing o validazione;
+    \item 2 per errori di utilizzo della CLI o di I/O.
+\end{itemize}
+
+\section{Interfaccia a linea di comando}
+
+Il tool \texttt{rc\_parser} è progettato come applicazione CLI.
+
+La sintassi generale è:
+
+\begin{verbatim}
+rc_parser <command> <file> [opzioni]
+rc_parser <command> --stdin [opzioni]
+\end{verbatim}
+
+I comandi disponibili sono:
+
+\begin{itemize}
+    \item \texttt{tokens}: esegue esclusivamente l’analisi lessicale e stampa la sequenza dei token prodotti dal lexer.
+    \item \texttt{parse}: esegue lexer + parser + validazione strutturale.
+    \item \texttt{ast}: esegue parsing e validazione e produce una rappresentazione dell’AST.
+    \item \texttt{simulate}: esegue l’intera pipeline fino alla simulazione (descritta nel Capitolo 5).
+\end{itemize}
+
+\subsection*{Opzioni generali}
+
+\begin{itemize}
+    \item \texttt{--stdin}: legge l’input dallo standard input invece che da file.
+    \item \texttt{--json}: produce output in formato JSON.
+    \item \texttt{--quiet}: sopprime l’output testuale mantenendo l’exit code.
+    \item \texttt{--print-tree}: stampa il parse tree generato da ANTLR.
+    \item \texttt{--with-loc}: include le informazioni di localizzazione nella stampa dell’AST.
+\end{itemize}
+
+Le opzioni relative alla simulazione (\texttt{--trace}, \texttt{--final-store}, \texttt{--final-races}, \texttt{--race}, \texttt{--seed}, \texttt{--init}, ecc.) vengono utilizzate esclusivamente dal comando \texttt{simulate} e verranno discusse nel Capitolo 5.
+
+\subsection*{Esempi di utilizzo}
+
+Esecuzione del parsing di un programma corretto:
+
+\begin{verbatim}
+rc_parser parse ok_01.rc
+\end{verbatim}
+
+Output:
+
+\begin{verbatim}
+Parse OK
+\end{verbatim}
+
+\bigskip
+
+\textbf{Stampa della sequenza dei token}
+
+\begin{verbatim}
+rc_parser tokens ok_01.rc
+\end{verbatim}
+
+Output:
+
+\begin{verbatim}
+1:0  PROC  "proc"
+1:5  ID  "Request"
+1:12  LPAREN  "("
+1:13  ID  "c"
+1:14  COMMA  ","
+1:16  ID  "w1"
+1:18  COMMA  ","
+1:20  ID  "w2"
+1:22  COMMA  ","
+1:24  ID  "s"
+1:25  RPAREN  ")"
+1:27  LBRACE  "{"
+2:4  ID  "c"
+2:5  DOT  "."
+2:6  ID  "req"
+2:10  ARROW  "->"
+2:13  ID  "s"
+2:14  DOT  "."
+2:15  ID  "req"
+2:18  SEMI  ";"
+3:4  ID  "w1"
+3:6  DOT  "."
+3:7  ID  "r"
+3:9  ASSIGN  "="
+3:11  ID  "req"
+3:14  SEMI  ";"
+4:4  ID  "w2"
+4:6  DOT  "."
+4:7  ID  "r"
+4:9  ASSIGN  "="
+4:11  ID  "req"
+4:14  SEMI  ";"
+6:4  RACE  "race"
+6:9  ID  "s"
+6:10  LBRACK  "["
+6:11  ID  "k"
+6:12  RBRACK  "]"
+6:14  COLON  ":"
+6:16  ID  "w1"
+6:18  DOT  "."
+6:19  ID  "r"
+6:21  COMMA  ","
+6:23  ID  "w2"
+6:25  DOT  "."
+6:26  ID  "r"
+6:28  ARROW  "->"
+6:31  ID  "s"
+6:32  DOT  "."
+6:33  ID  "ans"
+6:36  SEMI  ";"
+8:4  IF  "if"
+8:7  LPAREN  "("
+8:8  ID  "s"
+8:9  LBRACK  "["
+8:10  ID  "k"
+8:11  RBRACK  "]"
+8:12  RPAREN  ")"
+8:14  LBRACE  "{"
+...
+21:1  EOF  "<EOF>"
+\end{verbatim}
+
+\bigskip
+
+\textbf{Generazione dell’AST}
+
+\begin{verbatim}
+rc_parser ast ok_01.rc
+\end{verbatim}
+
+Output:
+
+\begin{verbatim}
+Program
+  Procedures (1)
+    ProcDef Request(c,w1,w2,s)
+      Block (5 stmt)
+        InteractionStmt
+          Comm c.req -> s.req
+        InteractionStmt
+          Assign w1.r = req
+        InteractionStmt
+          Assign w2.r = req
+        InteractionStmt
+          Race s[k] : w1.r , w2.r -> s.ans
+        IfRace (s[k])
+        Then:
+          Block (3 stmt)
+            InteractionStmt
+              Comm s.ans -> c.res
+            InteractionStmt
+              Select s -> c [FromW1]
+            InteractionStmt
+              Discharge s[k] : w2 -> s.lost
+        Else:
+          Block (3 stmt)
+            InteractionStmt
+              Comm s.ans -> c.res
+            InteractionStmt
+              Select s -> c [FromW2]
+            InteractionStmt
+              Discharge s[k] : w1 -> s.lost
+  Main
+    Block (1 stmt)
+      Call Request(c,w1,w2,s)
+\end{verbatim}
+
+\bigskip
+
+L’interfaccia CLI integra anche il testing automatico.
+
+Nel file \texttt{CMakeLists.txt} sono definiti test tramite 
+\texttt{add\_test(...)} che invocano direttamente l’eseguibile.
+
+L’esecuzione dell’intera suite è pensata per rendere il tool
+integrabile in pipeline di Continuous Integration e avviene tramite:
+
+\begin{verbatim}
+ctest --output-on-failure
+\end{verbatim}

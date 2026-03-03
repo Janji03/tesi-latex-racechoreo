@@ -1,0 +1,38 @@
+\chapter{Introduzione}
+
+La programmazione coreografica consente di descrivere sistemi distribuiti a partire da una specifica globale delle interazioni tra processi. Questo paradigma di programmazione rende esplicita la struttura comunicativa del sistema e mostra il suo comportamento complessivo. Il linguaggio Racing Choreographies estende tale modello introducendo il costrutto di race, che permette di esprimere competizione tra processi. Questa tesi presenta la progettazione e l’implementazione di un parser e di un simulatore per tale linguaggio.
+
+\section{Scopo della tesi}
+
+Lo scopo di questa tesi è realizzare un tool per l’esecuzione del linguaggio Racing Choreographies. Il lavoro consiste nell’implementazione di un parser in grado di riconoscere programmi scritti secondo una grammatica e di un simulatore capace di eseguirli secondo una semantica operazionale.
+
+Il contributo dell’elaborato consiste nella definizione di una pipeline che integra:
+
+\begin{itemize}
+    \item analisi lessicale e sintattica;
+    \item costruzione di un Abstract Syntax Tree;
+    \item validazione statica del programma;
+    \item una macchina astratta per l’esecuzione dei programmi.
+\end{itemize}
+
+La tesi è prevalentemente implementativa: a partire da una sintassi e da una semantica definite formalmente, l’obiettivo è rendere i programmi del linguaggio concretamente eseguibili.
+
+\section{Contesto}
+
+Una coreografia è una specifica globale che descrive in modo unitario le interazioni tra un insieme finito di processi concorrenti. Essa definisce esplicitamente le comunicazioni, le scelte e il flusso di controllo a livello dell’intero sistema. Il programma risultante rappresenta quindi il comportamento complessivo del sistema come un’unica struttura.
+
+Questo paradigma di programmazione è interessante perché permette di ragionare sul sistema a livello globale prima ancora di considerare l’implementazione dei singoli processi partecipanti e inoltre rende esplicite le dipendenze tra processi e riduce il rischio di errori come mismatch nelle comunicazioni o deadlock dovuti a specifiche incoerenti.
+
+Il linguaggio Racing Choreographies estende il modello coreografico classico: tramite le race si rende esplicito un fenomeno tipico dei sistemi distribuiti: la competizione tra eventi concorrenti e la necessità di determinare un vincitore, mantenendo la possibilità di gestire il processo perdente.
+
+\section{Struttura della tesi}
+
+La tesi è organizzata in sei capitoli, che seguono una progressione dal contesto teorico all’implementazione del tool sviluppato.
+
+Il Capitolo 2 descrive il background teorico.
+
+Il Capitolo 3 presenta la definizione formale del linguaggio dal punto di vista sintattico e semantico.
+
+Il Capitolo 4 presenta l’implementazione del parser.
+
+Il Capitolo 5 presenta l’implementazione del simulatore.

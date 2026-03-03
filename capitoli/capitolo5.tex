@@ -1,0 +1,785 @@
+\chapter{Implementazione del simulatore}
+
+L’obiettivo di questa fase è rendere eseguibile la semantica operazionale definita nella Sezione 2.4. Il simulatore è una macchina astratta esplicita che, a partire da un programma sintatticamente corretto, costruisce uno stato di esecuzione e applica iterativamente le regole operative del linguaggio, producendo l’evoluzione dello store e della memoria delle race.
+
+Nel seguito verranno descritte nel dettaglio l’architettura dello stato runtime, l’algoritmo di esecuzione e l’implementazione concreta delle regole semantiche.
+
+\section{Architettura del simulatore}
+
+Il simulatore rappresenta la componente del tool \texttt{rc\_parser} che si colloca come fase successiva all’analisi sintattica e alla validazione statica descritte nel Capitolo 4.
+
+Il simulatore realizza concretamente la relazione di transizione introdotta nella Sezione 2.4:
+
+\[
+C, \Sigma, M \longrightarrow C', \Sigma', M'
+\]
+
+dove la coreografia residua, lo store e la memoria delle race evolvono in modo coerente rispetto alle regole operative del linguaggio.
+
+All’interno della pipeline complessiva del sistema, il flusso di esecuzione è il seguente:
+
+\[
+\begin{aligned}
+&\text{Input} \\
+&\downarrow \\
+&\text{Lexer + Parser (ANTLR)} \\
+&\downarrow \\
+&\text{AST} \\
+&\downarrow \\
+&\text{Validazione strutturale} \\
+&\downarrow \\
+&\text{Simulatore}
+\end{aligned}
+\]
+
+Il simulatore opera esclusivamente sull’Abstract Syntax Tree ed è stato progettato come una macchina astratta esplicita, dotata di:
+
+\begin{itemize}
+    \item uno stato globale di esecuzione;
+    \item un meccanismo di controllo dell’esecuzione tramite stack;
+    \item politiche configurabili per la risoluzione delle race;
+    \item strumenti di tracciamento e diagnostica.
+\end{itemize}
+
+\section{Architettura della macchina astratta}
+
+Il simulatore implementa una macchina astratta esplicita che mantiene e aggiorna uno stato globale di esecuzione.
+
+Lo stato di esecuzione è composto dai seguenti elementi:
+
+\begin{itemize}
+    \item la coreografia residua, gestita tramite uno stack esplicito di frame;
+    \item lo store delle variabili localizzate ($\Sigma$);
+    \item la memoria delle race ($M$);
+    \item una struttura di tracciamento dell’esecuzione (\texttt{Trace}).
+\end{itemize}
+
+Questi componenti vengono aggiornati ad ogni passo di esecuzione.
+
+\subsection{Stato globale di esecuzione}
+
+Durante l’esecuzione, il simulatore mantiene una configurazione runtime che può essere rappresentata come:
+
+\[
+\langle C, \Sigma, M, T \rangle
+\]
+
+dove:
+
+\begin{itemize}
+    \item $C$ è la coreografia residua ancora da eseguire;
+    \item $\Sigma$ è lo store che associa variabili localizzate a valori;
+    \item $M$ è la memoria delle race risolte;
+    \item $T$ è la sequenza degli eventi di trace generati durante l’esecuzione.
+\end{itemize}
+
+A differenza della definizione puramente formale, la coreografia residua non viene riscritta strutturalmente a ogni transizione. Essa viene invece rappresentata tramite uno stack esplicito di blocchi, ciascuno accompagnato da un puntatore di istruzione che indica lo statement corrente. Questa scelta evita la ricostruzione continua dell’albero sintattico.
+
+\subsection{Store delle variabili}
+
+Lo store $\Sigma$ rappresenta l’insieme delle variabili localizzate associate ai processi. Esso è modellato come una funzione:
+
+\[
+(process, var) \longrightarrow Value
+\]
+
+dove \texttt{Value} può assumere due forme: intero o booleano.
+
+Ogni variabile è identificata in modo univoco dalla coppia (processo, nome della variabile), realizzata concretamente come chiave testuale della forma \texttt{process.var}.
+
+Il modello implementativo è il seguente:
+
+\begin{verbatim}
+using Store = std::unordered_map<std::string, Value>;
+\end{verbatim}
+
+L’operazione di aggiornamento dello store implementa direttamente la regola formale:
+
+\[
+\Sigma[p.x \mapsto v]
+\]
+
+Nel caso in cui una variabile venga letta prima di essere inizializzata, il simulatore genera un errore runtime.
+
+L’inizializzazione dello store può essere effettuata tramite opzioni della linea di comando, ad esempio tramite flag \texttt{--init}.
+
+\subsection{Memoria delle race}
+
+La memoria delle race $M$ contiene l’esito delle race già risolte. Ogni race è identificata da una coppia composta dal processo ricevente e dall’identificatore della race.
+
+Formalmente:
+
+\[
+M : (process, raceKey) \longrightarrow RaceRecord
+\]
+
+Per ciascuna race risolta viene memorizzato:
+
+\begin{itemize}
+    \item i due processi competitori;
+    \item il vincitore (sinistro o destro);
+    \item il processo vincente e quello perdente;
+    \item il valore vincente e il valore perdente;
+    \item un flag che indica se il valore del perdente è già stato scaricato tramite \texttt{discharge}.
+\end{itemize}
+
+La struttura runtime è:
+
+\begin{verbatim}
+struct RaceRecord {
+    Process leftProc;
+    Process rightProc;
+
+    enum class Winner { Left, Right };
+    Winner winner;
+
+    Value winningValue;
+    Value losingValue;
+
+    bool discharged = false;
+};
+\end{verbatim}
+
+Questa rappresentazione consente di implementare direttamente:
+
+\begin{itemize}
+    \item la regola di condizionale su race;
+    \item la regola di discharge;
+    \item il controllo di race già risolta.
+\end{itemize}
+
+\subsection{Stack di esecuzione}
+
+La coreografia residua $C$ è rappresentata tramite uno stack esplicito di frame di esecuzione.
+
+Ogni frame contiene:
+
+\begin{itemize}
+    \item un blocco di statement;
+    \item un instruction pointer che indica lo statement corrente;
+    \item una sostituzione dei parametri formali con quelli attuali;
+    \item informazioni sulla chiamata di procedura.
+\end{itemize}
+
+La struttura è:
+
+\begin{verbatim}
+struct Frame {
+    const ast::Block* block;
+    size_t ip = 0;  // instruction pointer
+
+    std::unordered_map<Process, Process> procSubst;
+};
+\end{verbatim}
+
+Quando viene eseguita una chiamata di procedura, il simulatore:
+
+\begin{enumerate}
+    \item costruisce una nuova sostituzione tra parametri formali e processi effettivi;
+    \item crea un nuovo frame per il corpo della procedura;
+    \item lo inserisce in cima allo stack.
+\end{enumerate}
+
+Lo stack complessivo è modellato come:
+
+\begin{verbatim}
+std::vector<Frame> callStack;
+\end{verbatim}
+
+L’esecuzione procede sempre sul frame in cima allo stack. Quando un blocco termina (cioè quando l’instruction pointer supera il numero di statement), il frame viene rimosso. Se lo stack diventa vuoto, l’esecuzione termina.
+
+
+\section{Algoritmo di esecuzione}
+
+L’algoritmo di esecuzione è implementato nel metodo:
+
+\begin{verbatim}
+sim::SimulationResult Simulator::run(const ast::Program& program,
+                                      const SimOptions& opt)
+\end{verbatim}
+
+Tale metodo realizza operativamente la relazione di transizione definita nella Sezione 2.4:
+
+\[
+C, \Sigma, M \longrightarrow C', \Sigma', M'
+\]
+
+attraverso un ciclo iterativo controllato da uno stack esplicito di frame.
+
+\subsection*{Contesto di esecuzione}
+
+All’avvio viene costruito un contesto di esecuzione (\texttt{ExecCtx}) che incapsula tutti gli elementi dello stato runtime:
+
+\begin{verbatim}
+struct ExecCtx {
+    const SimOptions& opt;
+    runtime::Store store;
+    runtime::RaceMemory races;
+    runtime::Trace trace;
+
+    uint64_t steps = 0;
+    uint64_t callDepth = 0;
+
+    std::mt19937_64 rng;
+};
+\end{verbatim}
+
+Questa struttura rappresenta concretamente la configurazione:
+
+\[
+\langle \Sigma, M, T \rangle
+\]
+
+Prima di entrare nel ciclo principale:
+
+\begin{itemize}
+    \item vengono applicati i binding iniziali (\texttt{--init}) scrivendo direttamente nello store;
+    \item viene costruita la tabella delle procedure tramite \texttt{buildProcTable};
+    \item viene inizializzato lo stack con un primo \texttt{BlockFrame} corrispondente al blocco \texttt{main}.
+\end{itemize}
+
+\begin{verbatim}
+stack.push_back(BlockFrame{ 
+    program.main->body.get(), 
+    0, 
+    {}, 
+    "", 
+    {} 
+});
+\end{verbatim}
+
+La coreografia iniziale $C_{main}$ è quindi rappresentata da un frame con \texttt{ip = 0}.
+
+\subsection*{Ciclo principale di esecuzione}
+
+Il ciclo di esecuzione è il seguente:
+
+\begin{verbatim}
+while (!stack.empty()) {
+    BlockFrame& fr = stack.back();
+
+    if (fr.ip >= fr.block->statements.size()) {
+        stack.pop_back();
+        continue;
+    }
+
+    const ast::Stmt& st = *fr.block->statements[fr.ip];
+    ...
+}
+\end{verbatim}
+
+L’oggetto \texttt{BlockFrame} contiene:
+
+\begin{itemize}
+    \item il blocco corrente (\texttt{block});
+    \item un instruction pointer (\texttt{ip});
+    \item una sostituzione dei parametri (\texttt{subst});
+    \item informazioni sulla chiamata di procedura.
+\end{itemize}
+
+La coreografia residua non viene riscritta strutturalmente: l’avanzamento è ottenuto incrementando \texttt{ip}. Ogni statement eseguito corrisponde a una singola applicazione della relazione di transizione. Prima dell’esecuzione di ogni statement viene incrementato il contatore \texttt{steps}.
+
+\subsection*{Dispatch}
+
+Il dispatch avviene tramite \texttt{std::visit} su \texttt{ast::Stmt}:
+
+\begin{verbatim}
+std::visit([&](auto&& node) {
+    using T = std::decay_t<decltype(node)>;
+
+    if constexpr (std::is_same_v<T, ast::InteractionStmt>) { ... }
+    else if constexpr (std::is_same_v<T, ast::IfLocalStmt>) { ... }
+    else if constexpr (std::is_same_v<T, ast::IfRaceStmt>) { ... }
+    else if constexpr (std::is_same_v<T, ast::CallStmt>) { ... }
+
+}, st);
+\end{verbatim}
+
+Nel caso di \texttt{InteractionStmt}, viene effettuata una seconda visita sul tipo concreto dell’interazione. Ogni costrutto è implementato in una funzione dedicata:
+
+\begin{itemize}
+    \item \texttt{execAssign}
+    \item \texttt{execComm}
+    \item \texttt{execRace}
+    \item \texttt{execDischarge}
+\end{itemize}
+
+Tali funzioni aggiornano esplicitamente:
+
+\begin{itemize}
+    \item lo store (\texttt{ctx.store.set(...)}),
+    \item la memoria delle race (\texttt{ctx.races.put(...)}),
+    \item la trace (\texttt{pushTrace(...)}),
+    \item lo stack,
+    \item eventuali chiamate di procedura.
+\end{itemize}
+
+\subsection*{Chiamate di procedura}
+
+Nel caso di \texttt{CallStmt}, l’algoritmo compie i seguenti passi:
+
+\begin{enumerate}
+    \item recupera la definizione della procedura dalla tabella;
+    \item costruisce la sostituzione tra parametri formali e processi effettivi (\texttt{buildCallSubst});
+    \item compone la sostituzione con quella del chiamante (\texttt{composeSubst});
+    \item inserisce un nuovo \texttt{BlockFrame} in cima allo stack.
+\end{enumerate}
+
+\begin{verbatim}
+stack.push_back(BlockFrame{
+    def->body.get(),
+    0,
+    composed,
+    node.proc,
+    node.loc
+});
+\end{verbatim}
+
+Quando l’instruction pointer supera la dimensione del blocco, il frame viene rimosso (senza chiamate esplicite) e l’esecuzione riprende nel contesto chiamante.
+
+\subsection*{Terminazione ed errori}
+
+La terminazione normale avviene quando lo stack risulta vuoto. In tal caso viene costruito un oggetto \texttt{SimulationResult} che contiene:
+
+\begin{itemize}
+    \item lo store finale;
+    \item la memoria delle race;
+    \item la trace dell’esecuzione;
+    \item il numero totale di passi effettuati.
+\end{itemize}
+
+In presenza di un errore runtime viene sollevata un’eccezione \texttt{RuntimeError}, intercettata all’interno di \texttt{Simulator::run}.
+
+\section{Implementazione dei costrutti del linguaggio}
+
+In questa sezione viene descritta l’implementazione della semantica operazione del linguaggio. Ogni costrutto è realizzato tramite una funzione che aggiorna esplicitamente lo stato globale $\langle C,\Sigma,M\rangle$.
+
+\subsection{Assegnamento}
+
+\subsection*{Regola formale}
+
+\[
+\langle assign \rangle \qquad
+\frac{\Sigma(p,e) \downarrow v}
+{C, \Sigma, M \longrightarrow C, \Sigma[p.x \mapsto v], M}
+\]
+
+\subsection*{Implementazione}
+
+\begin{verbatim}
+static void execAssign(ExecCtx& ctx,
+                       const ast::Assign& a,
+                       const Subst& subst)
+{
+    runtime::Value v = evalExpr(ctx, a.target.process,
+                                a.value, subst, a.loc);
+
+    ctx.store.set(targetProcEff, a.target.var, v);
+}
+\end{verbatim}
+
+Viene valutata l’espressione nel contesto del processo corretto e aggiornato lo store tramite \texttt{ctx.store.set}. L’effetto è una modifica esclusiva di $\Sigma$ mentre la coreografia residua e la memoria delle race rimangono invariate.
+
+\subsection{Comunicazione}
+
+\subsection*{Regola formale}
+
+\[
+\langle comm \rangle \qquad
+\frac{\Sigma(p,e) \downarrow v}
+{C, \Sigma, M \longrightarrow C, \Sigma[q.x \mapsto v], M}
+\]
+
+\subsection*{Implementazione}
+
+\begin{verbatim}
+static void execComm(ExecCtx& ctx,
+                     const ast::Comm& c,
+                     const Subst& subst)
+{
+    runtime::Value v = evalProcExpr(ctx, c.from, subst);
+    ctx.store.set(toProcEff, c.to.var, v);
+}
+\end{verbatim}
+
+Viene valutata l’espressione nel processo sorgente e scritto il valore nella variabile del destinatario. Lo stato viene aggiornato solo nello store $\Sigma$ mentre $M$ e la struttura dello stack non vengono modificati.
+
+\subsection{Selezione}
+
+\subsection*{Regola formale}
+
+\[
+\langle select \rangle \qquad
+\frac{} {C, \Sigma, M \longrightarrow C, \Sigma, M}
+\]
+
+\subsection*{Implementazione}
+
+\begin{verbatim}
+static void execSelect(ExecCtx& ctx,
+                       const ast::Select& s,
+                       const Subst& subst)
+{
+    pushTrace(ctx, "sel", ...);
+}
+\end{verbatim}
+
+Viene registrato un evento di trace senza effettuare operazioni sullo store o sulla memoria delle race.
+
+\subsection{Condizionale locale}
+
+\subsection*{Regola formale}
+
+\[
+\langle if\text{-}true \rangle \qquad
+\frac{\Sigma(p,e) \downarrow true}
+{\text{if } p.e \text{ then } C_1 \text{ else } C_2,\ \Sigma,\ M \longrightarrow C_1,\ \Sigma,\ M}
+\]
+
+\[
+\langle if\text{-}false \rangle \qquad
+\frac{\Sigma(p,e) \downarrow false}
+{\text{if } p.e \text{ then } C_1 \text{ else } C_2,\ \Sigma,\ M \longrightarrow C_2,\ \Sigma,\ M}
+\]
+
+\subsection*{Implementazione}
+
+\begin{verbatim}
+runtime::Value condV = evalProcExpr(ctx, node.condition, fr.subst);
+bool cond = requireBool(condV, node.condition.loc);
+
+stack.push_back(BlockFrame{ chosenBlock, 0, fr.subst, "", {} });
+\end{verbatim}
+
+Viene valutata la condizione e selezionato il blocco corrispondente inserendolo nello stack di esecuzione. L’effetto è una modifica della coreografia residua $C$, mentre $\Sigma$ e $M$ restano invariati.
+
+\subsection{Call di procedura}
+
+\subsection*{Regola formale}
+
+\[
+\langle call \rangle \qquad
+\frac{}{\text{call } P(p_1,\dots,p_n),\ \Sigma,\ M \longrightarrow C_P[p_i/x_i],\ \Sigma,\ M}
+\]
+
+\subsection*{Implementazione}
+
+\begin{verbatim}
+auto inner = buildCallSubst(*def, node, fr.subst);
+auto composed = composeSubst(fr.subst, inner);
+
+stack.push_back(BlockFrame{
+    def->body.get(),
+    0,
+    composed,
+    node.proc,
+    node.loc
+});
+\end{verbatim}
+
+Viene costruita la sostituzione tra parametri formali e processi effettivi e creato un nuovo frame per il corpo della procedura. L’effetto è l’estensione dello stack che rappresenta l’espansione della coreografia, senza modificare direttamente $\Sigma$ o $M$.
+
+\subsection{Race}
+
+\subsection*{Regola formale}
+
+\[
+\langle l\text{race} \rangle \qquad
+\frac{
+s[k] \notin dom(M)
+\quad
+\Sigma(p,e) \downarrow v
+\quad
+\Sigma(q,e') \downarrow v'
+}
+{C, \Sigma, M \longrightarrow C,\ \Sigma[s.x \mapsto v],\ M[s[k] \mapsto entry_L]}
+\]
+
+\subsection*{Implementazione}
+
+\begin{verbatim}
+runtime::Value vL = evalProcExpr(ctx, r.left, subst);
+runtime::Value vR = evalProcExpr(ctx, r.right, subst);
+
+runtime::RaceWinnerSide side = decideRaceWinnerSide(ctx, r.loc);
+
+ctx.store.set(targetProcEff, r.target.var, entry.vWinner);
+ctx.races.put(key, entry);
+\end{verbatim}
+
+Vengono valutati entrambi i valori competitori e viene scelto il vincitore secondo la politica configurata e costruisce una \texttt{RaceEntry}. L’effetto è un aggiornamento dello store $\Sigma$ con il valore vincente e della memoria $M$ con l’esito completo della race. È analogo per la regola \texttt{rrace}.
+
+\subsection{IfRace}
+
+\subsection*{Regola formale}
+
+\[
+\langle ifRace \rangle \qquad
+\frac{M(s[k]) = entry}
+{\text{if } s[k] \text{ then } C_1 \text{ else } C_2,\ \Sigma,\ M \longrightarrow C_i,\ \Sigma,\ M}
+\]
+
+\subsection*{Implementazione}
+
+\begin{verbatim}
+const runtime::RaceEntry* entry = ctx.races.get(key);
+stack.push_back(BlockFrame{ chosenBlock, 0, fr.subst, "", {} });
+\end{verbatim}
+
+Viene consultata la memoria delle race per determinare quale lato abbia vinto. L’effetto è la selezione del blocco corrispondente nella coreografia residua, senza modificare $\Sigma$ o $M$.
+
+\subsection{Discharge}
+
+\subsection*{Regola formale}
+
+\[
+\langle discharge \rangle \qquad
+\frac{M(s[k]) = entry}
+{C, \Sigma, M \longrightarrow C,\ \Sigma[s.x \mapsto v_{loser}],\ M'}
+\]
+
+\subsection*{Implementazione}
+
+\begin{verbatim}
+ctx.store.set(targetProcEff, d.target.var, entry->vLoser);
+entry->discharged = true;
+\end{verbatim}
+
+Viene verificata la correttezza del discharge e scritto nello store il valore del perdente. L’effetto è un aggiornamento di $\Sigma$ e la modifica dello stato interno dell’entry in $M$, che viene marcata come già scaricata.
+
+\section{Politiche di risoluzione delle race}
+
+Il costrutto \texttt{race} è non deterministico in quanto le regole $\langle l\text{race} \rangle$ e $\langle r\text{race} \rangle$ sono entrambe applicabili quando le precondizioni sono soddisfatte. Per questo motivo, nel simulatore il non determinismo viene reso esplicito tramite una politica definita.
+
+\begin{verbatim}
+enum class RacePolicy { Random, Left, Right };
+\end{verbatim}
+
+La scelta del vincitore avviene nella funzione:
+
+\begin{verbatim}
+static runtime::RaceWinnerSide
+decideRaceWinnerSide(ExecCtx& ctx, const ast::SourceRange& loc)
+\end{verbatim}
+
+Il comportamento è il seguente:
+
+\begin{itemize}
+    \item \texttt{RacePolicy::Left}: viene sempre selezionato il lato sinistro, implementando sistematicamente la regola $\langle l\text{race} \rangle$.
+    \item \texttt{RacePolicy::Right}: viene sempre selezionato il lato destro, implementando sistematicamente la regola $\langle r\text{race} \rangle$.
+    \item \texttt{RacePolicy::Random}: viene effettuata una scelta pseudo-casuale tramite un generatore \texttt{std::mt19937\_64} inizializzato con un seed configurabile.
+\end{itemize}
+
+Nel caso \texttt{Random}, la scelta è effettuata come segue:
+
+\begin{verbatim}
+std::uniform_int_distribution<int> dist(0, 1);
+return (dist(ctx.rng) == 0)
+       ? runtime::RaceWinnerSide::Left
+       : runtime::RaceWinnerSide::Right;
+\end{verbatim}
+
+\subsection*{Determinismo e riproducibilità}
+
+La presenza del parametro \texttt{--seed} consente di riprodurre una sequenza deterministica di risoluzioni di race. Questo è particolarmente utile per effettuare test sistematici sul comportamento del programma, mantenendo controllato il comportamento pseudo-casuale.
+
+Formalmente, a parità di:
+
+\[
+\langle C_{main}, \Sigma_0, M_0, seed \rangle
+\]
+
+la sequenza di transizioni prodotta dal simulatore risulta deterministica.
+
+\section{Inizializzazione dello stato}
+
+Il simulatore consente di specificare uno stato iniziale dello store $\Sigma$ tramite l’opzione da linea di comando:
+
+\begin{verbatim}
+--init P.X=V
+\end{verbatim}
+
+dove:
+
+\begin{itemize}
+    \item $P$ è un processo;
+    \item $X$ è una variabile;
+    \item $V$ è un valore di tipo \texttt{int}, \texttt{true} o \texttt{false}.
+\end{itemize}
+
+I binding vengono raccolti nella struttura:
+
+\begin{verbatim}
+struct InitBinding {
+    std::string process;
+    std::string var;
+    runtime::Value value;
+};
+\end{verbatim}
+
+e memorizzati nel campo \texttt{SimOptions::init}.
+
+All’inizio del metodo \texttt{Simulator::run}, prima dell’ingresso nel ciclo principale, tali binding vengono applicati direttamente allo store:
+
+\begin{verbatim}
+for (const auto& b : opt.init) {
+    ctx.store.set(b.process, b.var, b.value);
+}
+\end{verbatim}
+
+Questo produce uno stato iniziale:
+
+\[
+\langle C_{main}, \Sigma_0, M_0 \rangle
+\]
+
+in cui $\Sigma_0$ può contenere variabili già inizializzate.
+
+L’opzione \texttt{--init} è utile perché permette di mantenere separati il codice della coreografia e lo stato iniziale dell’esecuzione, favorendo la riproducibilità dei test e la flessibilità dell’ambiente di simulazione.
+
+\section{Gestione degli errori a runtime}
+
+Nel simulatore gli errori runtime sono modellati tramite un’eccezione:
+
+\begin{verbatim}
+class RuntimeError final : public std::runtime_error {
+public:
+    RuntimeError(const ast::SourceRange& loc, const std::string& msg)
+        : std::runtime_error(msg), loc_(loc) {}
+
+    const ast::SourceRange& loc() const { return loc_; }
+
+private:
+    ast::SourceRange loc_;
+};
+\end{verbatim}
+
+L’eccezione incapsula sia il messaggio sia la posizione nel sorgente (\texttt{SourceRange}).
+
+Gli errori possono emergere in più punti della macchina astratta, in particolare:
+
+\subsection*{1) Lettura di variabili non inizializzate}
+
+Durante la valutazione di un’espressione variabile (\texttt{ExprVar}), se $\Sigma$ non contiene una binding per $p.x$ viene sollevato un errore:
+
+\begin{verbatim}
+auto ov = ctx.store.tryGet(pEff, node.name);
+if (!ov.has_value()) {
+    throw runtime::RuntimeError(loc, "uninitialized variable ...");
+}
+\end{verbatim}
+
+\subsection*{2) Tipo errato nelle condizioni}
+
+Il condizionale locale richiede che $p.e$ valuti a booleano.
+
+\begin{verbatim}
+static bool requireBool(const runtime::Value& v, 
+                        const ast::SourceRange& loc) {
+    if (v.kind != runtime::Value::Kind::Bool) {
+        throw runtime::RuntimeError(loc, 
+                                    "condition is not a boolean");
+    }
+    return v.boolValue;
+}
+\end{verbatim}
+
+\subsection*{3) Uso scorretto delle race}
+
+Gli errori relativi alle race includono:
+
+\begin{itemize}
+    \item race già risolta ($s[k]$ già presente in $M$);
+    \item \texttt{if (s[k])} su una race non risolta;
+    \item \texttt{discharge} su race non risolta;
+    \item discharge effettuato dal processo sbagliato (deve essere il perdente memorizzato in $M$);
+    \item discharge ripetuto sulla stessa race.
+\end{itemize}
+
+\subsection*{Intercettazione delle eccezioni}
+
+Il metodo \texttt{Simulator::run} intercetta le eccezioni e le converte in un risultato strutturato, in modo che:
+
+\begin{itemize}
+    \item l’esecuzione termini con \texttt{res.ok = false};
+    \item l’errore venga riportato in \texttt{runtimeErrors} con file/riga/colonna;
+    \item lo stato parziale della simulazione venga comunque restituito.
+\end{itemize}
+
+\begin{verbatim}
+} catch (const runtime::RuntimeError& re) {
+    RuntimeErrorInfo e;
+    e.file = re.loc().file;
+    e.line = re.loc().start.line;
+    e.col  = re.loc().start.col;
+    e.message = re.what();
+    res.runtimeErrors.push_back(std::move(e));
+
+    res.store = std::move(ctx.store);
+    res.races = std::move(ctx.races);
+    res.trace = std::move(ctx.trace);
+    res.ok = false;
+    return res;
+}
+\end{verbatim}
+
+\section{Esempio di simulazione}
+
+Questa sezione presenta la simulazione pratica di un programma. Si consideri il programma \texttt{.rc} che definisce una procedura \texttt{Request} in cui due worker competono tramite una race per fornire una risposta al server, e il valore del perdente viene recuperato tramite \texttt{discharge}.
+
+\subsection*{Esecuzione del simulatore}
+
+\begin{verbatim}
+rc_parser simulate ok_01.rc \
+  --trace --final-store --final-races \
+  --race random --seed 0 \
+  --init c.req=5 --init w1.req=7 --init w2.req=5
+\end{verbatim}
+
+\subsection*{Estratto della trace}
+
+\begin{verbatim}
+init c.req = 5
+init w1.req = 7
+init w2.req = 5
+call Request(c,w1,w2,s)
+com c.req = 5 -> s.req
+asg w1.r = 7
+asg w2.r = 5
+race s[k] winner=w1 loser=w2 write s.ans=7
+ifRace s[k] winner=w1 -> then
+com s.ans = 7 -> c.res
+sel s -> c [FromW1]
+dis s[k] loser=w2 write s.lost=5
+ret Request
+\end{verbatim}
+
+\subsection*{Stato finale dello store $\Sigma$}
+
+\begin{verbatim}
+c.req = 5
+c.res = 7
+s.ans = 7
+s.lost = 5
+s.req = 5
+w1.r = 7
+w1.req = 7
+w2.r = 5
+w2.req = 5
+\end{verbatim}
+
+\subsection*{Memoria delle race $M$}
+
+\begin{verbatim}
+s[k]: left=w1, right=w2, winner=w1, loser=w2,
+      vWin=7, vLose=5, discharged=true
+\end{verbatim}
+
+L’esecuzione mostra che:
+
+\begin{itemize}
+    \item il valore vincente (7) viene scritto in \texttt{s.ans} secondo la regola $\langle l\text{race} \rangle$;
+    \item il condizionale \texttt{if (s[k])} seleziona correttamente il ramo \texttt{then};
+    \item il \texttt{discharge} assegna a \texttt{s.lost} il valore del perdente (5);
+    \item la memoria $M$ conserva l’esito completo della race, incluso il flag \texttt{discharged}.
+\end{itemize}
