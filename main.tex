@@ -7,6 +7,7 @@
 \usepackage[T1]{fontenc}
 \usepackage[utf8]{inputenc}
 \usepackage[italian]{babel}
+\usepackage{csquotes} % consigliato da biblatex
 
 % -------------------------
 % Layout
@@ -27,10 +28,19 @@
 \usepackage{amsmath, amssymb}
 
 % -------------------------
+% Rule labels for operational semantics
+% -------------------------
+\newcommand{\rulelabel}[1]{\hfill\textsc{(#1)}}
+
+% -------------------------
+% Colors (also used by listings/tcolorbox)
+% -------------------------
+\usepackage{xcolor}
+
+% -------------------------
 % Code blocks
 % -------------------------
 \usepackage{listings}
-\usepackage{xcolor}
 
 \lstset{
   basicstyle=\ttfamily\small,
@@ -38,6 +48,29 @@
   breaklines=true,
   frame=single,
   showstringspaces=false
+}
+
+\usepackage{tikz}
+\usetikzlibrary{arrows.meta, positioning, fit}
+
+% -------------------------
+% Boxes for examples (tcolorbox)
+% -------------------------
+\usepackage{tcolorbox}
+\tcbuselibrary{listings}
+
+% A simple style for running examples
+\tcbset{
+  thesisexample/.style={
+    colback=gray!5,
+    colframe=gray!50,
+    boxrule=0.6pt,
+    arc=2mm,
+    left=2mm,
+    right=2mm,
+    top=1mm,
+    bottom=1mm
+  }
 }
 
 % -------------------------

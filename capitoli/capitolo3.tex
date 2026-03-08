@@ -1,536 +1,64 @@
-\chapter{Dalla sintassi alla grammatica}
+\chapter{Dalla sintassi astratta alla grammatica}
 
-In questo capitolo viene introdotta una sintassi concreta del linguaggio, progettata per essere leggibile e non ambigua, e successivamente formalizzata in EBNF. Infine, la specifica viene tradotta in una grammatica ANTLR, che costituisce la base per la generazione automatica del lexer e del parser utilizzati nel tool.
+Nel capitolo precedente è stata introdotta la sintassi astratta del linguaggio Racing Choreographies insieme alla semantica operazionale.
+
+Tuttavia, la sintassi astratta descrive la struttura logica dei programmi indipendentemente dalla loro rappresentazione testuale e per poter scrivere ed eseguire programmi è necessario definire una sintassi concreta e una grammatica per il parser.
+
+Il processo seguito è stato quello di progettare una sintassi concreta poi formalizzata in una grammatica espressa in Extended Backus--Naur Form (EBNF) e tradotta infine in una grammatica ANTLR \cite{antlr4tool}.
+
+Ai fini della comprensione del linguaggio viene illustrato il passo più rilevante ovvero la progettazione della sintassi concreta, che stabilisce come i costrutti teorici presentati nel capitolo precedente vengono effettivamente scritti nei programmi.
+
+La grammatica completa utilizzata per l’implementazione del parser è disponibile nella repository del progetto nel file \texttt{RacingChoreo.g4} nella cartella \texttt{/grammar} \cite{rcparserrepo}.
 
 \section{Principi e requisiti della sintassi concreta}
 
-La progettazione della sintassi concreta di Racing Choreographies è stata guidata dalle seguenti scelte progettuali secondo uno stile C-like:
+La progettazione della sintassi concreta di Racing Choreographies è stata guidata dalle seguenti scelte progettuali secondo uno stile C-like.
 
-\begin{itemize}
-    \item \textbf{Separazione tra definizioni e coreografia principale}
+\subsection*{Separazione tra definizioni e coreografia principale}
 
-    Un programma è composto da zero o più definizioni di procedura seguite da una coreografia principale identificata dalla keyword \texttt{main}. Questa scelta rende esplicito il punto di ingresso dell’esecuzione.
+Un programma è composto da zero o più definizioni di procedura seguite da una coreografia principale identificata dalla keyword \texttt{main}. Questa scelta rende esplicito il punto di ingresso dell’esecuzione del programma.
 
-    \item \textbf{Uso di keyword esplicite}
+\subsection*{Uso di keyword esplicite}
 
-    Costrutti che nella sintassi astratta sono espressi in forma vengono introdotti tramite keyword riservate: \texttt{proc}, \texttt{main}, \texttt{call}, \texttt{race}, \texttt{discharge}, \texttt{if}, \texttt{else}. Questa scelta facilita la distinzione tra identificatori e costrutti del linguaggio.
+I costrutti principali del linguaggio sono introdotti tramite keyword riservate, tra cui \texttt{proc}, \texttt{main}, \texttt{call}, \texttt{race}, \texttt{discharge}, \texttt{if} ed \texttt{else}.
 
-    \item \textbf{Struttura a blocchi}
+L’uso di parole chiave esplicite facilita la distinzione tra identificatori del programma e costrutti del linguaggio.
 
-    Le coreografie sono racchiuse tra parentesi graffe \texttt{\{...\}}.
+\subsection*{Struttura a blocchi}
 
-    \item \textbf{La terminazione 0}
+Le coreografie sono racchiuse tra parentesi graffe \texttt{\{ ... \}}, come accade in molti linguaggi di programmazione imperativi in quanto questo consente di organizzare in modo chiaro sequenze di istruzioni e rami condizionali.
 
-    Non viene rappresentata esplicitamente: la fine di un blocco corrisponde alla terminazione della coreografia contenuta.
+\subsection*{Terminazione implicita della coreografia}
 
-    \item \textbf{Sequenzialità esplicita tramite punto e virgola}
+Il termine di terminazione \texttt{0}, presente nella sintassi astratta, non viene rappresentato esplicitamente nella sintassi concreta. La chiusura di un blocco corrisponde implicitamente alla terminazione della coreografia contenuta.
 
-    Le istruzioni e le chiamate di procedura sono terminate dal punto e virgola rendendo esplicita la sequenza delle azioni. I costrutti condizionali, invece, sono strutturati come statement a blocco e non richiedono il punto e virgola finale.
+\subsection*{Sequenzialità esplicita tramite punto e virgola}
 
-    \item \textbf{Distinzione tra condizionali locali e su race}
+Le istruzioni e le chiamate di procedura sono terminate dal punto e virgola \texttt{;}, rendendo esplicita la sequenza delle azioni. I costrutti condizionali, invece, sono strutturati come blocchi e non richiedono il punto e virgola finale.
 
-    Le due forme di condizionale previste dalla sintassi astratta vengono rese sintatticamente distinte:
 
-\begin{verbatim}
-if (p.e) { ... } else { ... }
-if (s[k]) { ... } else { ... }
-\end{verbatim}
+\subsection*{Distinzione tra condizionali locali e su race}
 
-    \item \textbf{Espressioni semplici}
+Le due forme di condizionale previste dalla sintassi astratta sono rese sintatticamente distinte:
 
-    Le espressioni sono limitate a valori letterali o identificatori. Non sono presenti operatori aritmetici questo perché il linguaggio si concentra sulle interazioni tra processi e non sul calcolo.
-\end{itemize}
+\begin{center}
+\texttt{if (p.e) \{ ... \} else \{ ... \}}
+\end{center}
 
-\section{Sintassi concreta di Racing Choreographies}
+\begin{center}
+\texttt{if (s[k]) \{ ... \} else \{ ... \}}
+\end{center}
 
-Questa sezione mostra in modo sistematico la sintassi concreta del linguaggio Racing Choreographies.
+Nel primo caso la condizione dipende dalla valutazione locale di un’espressione appartenente a un processo. Nel secondo caso la condizione dipende dall’esito di una race identificata da \texttt{s[k]}.
 
-\subsection*{Struttura del programma}
+\subsection*{Espressioni semplici}
 
-Un programma è composto da zero o più definizioni di procedura seguite da una coreografia principale identificata dalla keyword \texttt{main}.
-
-Forma generale:
-
-\begin{verbatim}
-<procdef>*
-main {
-    <C>
-}
-\end{verbatim}
-
-L’esecuzione del programma inizia sempre dal blocco associato a \texttt{main}.
-
-\subsection*{Definizioni di procedura}
-
-Una procedura è dichiarata tramite la keyword \texttt{proc}, seguita dal nome della procedura, dalla lista dei processi partecipanti e da un blocco che ne rappresenta il corpo.
-
-Forma generale:
-
-\begin{verbatim}
-proc X(p1, p2, ..., pn) {
-    <C>
-}
-\end{verbatim}
-
-dove:
-
-\begin{itemize}
-    \item $X$ è il nome della procedura;
-    \item $p_1, \dots, p_n$ sono i processi partecipanti;
-    \item il blocco \texttt{\{ ... \}} contiene una coreografia.
-\end{itemize}
-
-\subsection*{Coreografie e blocchi}
-
-Una coreografia è rappresentata da una sequenza di statement racchiusi tra parentesi graffe.
-
-Forma generale:
-
-\begin{verbatim}
-{
-    <stmt1>
-    <stmt2>
-    ...
-}
-\end{verbatim}
-
-La terminazione della coreografia è implicita alla chiusura del blocco.
-
-All’interno di un blocco è possibile scrivere:
-
-\begin{itemize}
-    \item istruzioni
-    \item chiamate di procedura
-    \item condizionali locali
-    \item condizionali su esito di race
-\end{itemize}
-
-\subsection*{Chiamata di procedura}
-
-La chiamata di procedura è resa esplicita dalla keyword \texttt{call}.
-
-Forma generale:
-
-\begin{verbatim}
-call X(p1, p2, ..., pn);
-\end{verbatim}
-
-\subsection*{Condizionale locale}
-
-Il condizionale locale valuta un’espressione appartenente a un processo specifico.
-
-Forma generale:
-
-\begin{verbatim}
-if (p.e) {
-    <C1>
-} else {
-    <C2>
-}
-\end{verbatim}
-
-L’espressione \texttt{p.e} viene valutata localmente dal processo $p$.
-
-\subsection*{Condizionale su esito di race}
-
-Il condizionale su race dipende dall’esito di una race precedentemente eseguita.
-
-Forma generale:
-
-\begin{verbatim}
-if (s[k]) {
-    <C1>
-} else {
-    <C2>
-}
-\end{verbatim}
-
-La condizione è vera se ha vinto il lato sinistro della race identificata da \texttt{s[k]} falsa altrimenti.
-
-\subsection*{Istruzioni}
-
-Le istruzioni sono le azioni elementari del linguaggio e terminano sempre con \texttt{;}.
-
-\subsection*{Comunicazione}
-
-Forma generale:
-
-\begin{verbatim}
-p.e -> q.x;
-\end{verbatim}
-
-Il processo $p$ valuta l’espressione $e$ e invia il valore risultante al processo $q$ che lo assegna alla variabile $x$.
-
-\subsection*{Selezione}
-
-Forma generale:
-
-\begin{verbatim}
-p -> q[L];
-\end{verbatim}
-
-Il processo $p$ invia la label $L$ al processo $q$.
-
-\subsection*{Assegnamento}
-
-Forma generale:
-
-\begin{verbatim}
-p.x = e;
-\end{verbatim}
-
-Il processo $p$ assegna alla propria variabile $x$ il valore dell’espressione $e$.
-
-\subsection*{Race}
-
-La race rappresenta una competizione tra due processi che offrono un valore a un processo ricevente.
-
-Forma generale:
-
-\begin{verbatim}
-race s[k] : p.e , q.e' -> s.x;
-\end{verbatim}
-
-dove:
-
-\begin{itemize}
-    \item \texttt{s[k]} è l’identificatore della race;
-    \item \texttt{p.e} e \texttt{q.e'} sono le offerte dei due processi competitori;
-    \item \texttt{s.x} è la variabile in cui viene memorizzato il valore vincente.
-\end{itemize}
-
-\subsection*{Discharge}
-
-Il discharge consente di ricevere il valore del processo perdente della race.
-
-Forma generale:
-
-\begin{verbatim}
-discharge s[k] : p -> s.x;
-\end{verbatim}
-
-\subsection*{Espressioni}
-
-Forma generale:
-
-\[
-\langle e \rangle ::= \langle value \rangle \mid \langle identifier \rangle
-\]
-
-I valori ammessi sono:
-
-\begin{itemize}
-    \item interi in base 10
-    \item booleani
-\end{itemize}
-
-\section{Formalizzazione della sintassi in EBNF}
-
-La sintassi concreta descritta nella sezione precedente viene ora formalizzata tramite una grammatica espressa in Extended Backus–Naur Form (EBNF).
-
-L’uso della EBNF consente di specificare in modo formale e non ambiguo la struttura dei programmi e fornisce una descrizione formale completa della sintassi concreta del linguaggio.
-
-\subsection*{Struttura del programma}
-
-\[
-\begin{array}{rcl}
-Program &::=& \{ ProcDef \} \; Main \; ; \\
-Main    &::=& \texttt{"main"} \; Block \; ;
-\end{array}
-\]
-
-\subsection*{Definizioni di procedura}
-
-\[
-\begin{array}{rcl}
-ProcDef    &::=& \texttt{"proc"} \; ProcName \; "(" \; ProcParams \; ")" \; Block \; ; \\
-ProcParams &::=& Process \; \{ "," \; Process \} \; ;
-\end{array}
-\]
-
-\subsection*{Blocchi e coreografie}
-
-\[
-Block ::= \texttt{"{"} \; \{ Stmt \} \; \texttt{"}"} \; ;
-\]
-
-\subsection*{Statement}
-
-\[
-\begin{array}{rcl}
-Stmt &::=& InteractionStmt \\
-     &\mid& CallStmt \\
-     &\mid& IfLocalStmt \\
-     &\mid& IfRaceStmt \; ;
-\end{array}
-\]
-
-\subsection*{Condizionale locale}
-
-\[
-IfLocalStmt ::= \texttt{"if"} \; "(" \; ProcExpr \; ")" \; Block \; \texttt{"else"} \; Block \; ;
-\]
-
-\subsection*{Condizionale su esito di race}
-
-\[
-IfRaceStmt ::= \texttt{"if"} \; "(" \; RaceId \; ")" \; Block \; \texttt{"else"} \; Block \; ;
-\]
-
-\subsection*{Chiamata di procedura}
-
-\[
-\begin{array}{rcl}
-CallStmt &::=& \texttt{"call"} \; ProcName \; "(" \; ProcArgs \; ")" \; ";" \; ; \\
-ProcArgs &::=& Process \; \{ "," \; Process \} \; ;
-\end{array}
-\]
-
-\subsection*{Istruzioni}
-
-\[
-\begin{array}{rcl}
-InteractionStmt &::=& Interaction \; ";" \; ; \\
-Interaction &::=& Comm \\
-            &\mid& Select \\
-            &\mid& Assign \\
-            &\mid& Race \\
-            &\mid& Discharge \; ;
-\end{array}
-\]
-
-\subsection*{Comunicazione}
-
-\[
-Comm ::= ProcExpr \; \texttt{"->"} \; ProcVar \; ;
-\]
-
-\subsection*{Selezione}
-
-\[
-Select ::= Process \; \texttt{"->"} \; Process \; "[" \; Label \; "]" \; ;
-\]
-
-\subsection*{Assegnamento}
-
-\[
-Assign ::= ProcVar \; "=" \; Expr \; ;
-\]
-
-\subsection*{Race}
-
-\[
-Race ::= \texttt{"race"} \; RaceId \; ":" \; ProcExpr \; "," \; ProcExpr \; \texttt{"->"} \; ProcVar \; ;
-\]
-
-\subsection*{Discharge}
-
-\[
-Discharge ::= \texttt{"discharge"} \; RaceId \; ":" \; Process \; \texttt{"->"} \; ProcVar \; ;
-\]
-
-\subsection*{Espressioni}
-
-\[
-\begin{array}{rcl}
-ProcExpr &::=& Process \; "." \; Expr \; ; \\
-Expr     &::=& Value \\
-         &\mid& Var \; ;
-\end{array}
-\]
-
-\subsection*{Variabili localizzate}
-
-\[
-ProcVar ::= Process \; "." \; Var \; ;
-\]
-
-\subsection*{Identificatori}
-
-\[
-\begin{array}{rcl}
-ProcName &::=& Identifier \; ; \\
-Process  &::=& Identifier \; ; \\
-Var      &::=& Identifier \; ; \\
-Label    &::=& Identifier \; ;
-\end{array}
-\]
-
-\subsection*{Identificatore di race}
-
-\[
-\begin{array}{rcl}
-RaceId  &::=& Process \; "[" \; RaceKey \; "]" \; ; \\
-RaceKey &::=& Identifier \; ;
-\end{array}
-\]
-
-\subsection*{Lessico di base}
-
-\[
-\begin{array}{rcl}
-Identifier &::=& Letter \; \{ Letter \mid Digit \mid "_" \} \; ; \\
-Value      &::=& Integer \mid Boolean \; ; \\
-Integer    &::=& Digit \; \{ Digit \} \; ; \\
-Boolean    &::=& \texttt{"true"} \mid \texttt{"false"} \; ;
-\end{array}
-\]
-
-\section{Traduzione della EBNF in grammatica ANTLR}
-
-La grammatica EBNF presentata nella sezione precedente definisce in modo formale la struttura sintattica del linguaggio. Per poter generare un parser è necessario tradurre tale specifica in una grammatica compatibile con ANTLR.
-
-ANTLR utilizza una notazione propria concettualmente molto vicina alla EBNF. La traduzione consiste principalmente in:
-
-\begin{itemize}
-    \item separazione tra regole sintattiche (parser rules) e regole lessicali (lexer rules);
-    \item introduzione esplicita dei token per keyword e simboli;
-    \item definizione delle regole per la gestione degli identificatori e dei valori letterali;
-    \item eliminazione di ambiguità lessicali;
-    \item la necessità di una regola di ingresso (\texttt{program}) che includa \texttt{EOF}.
-\end{itemize}
-
-\subsection*{Struttura generale}
-
-\begin{verbatim}
-program
-  : procDef* mainDef EOF
-  ;
-\end{verbatim}
-
-\[
-Program ::= \{ ProcDef \} \; Main \; ;
-\]
-
-\begin{verbatim}
-mainDef
-  : MAIN block
-  ;
-\end{verbatim}
-
-\subsection*{Definizione delle procedure}
-
-\begin{verbatim}
-procDef
-  : PROC procName LPAREN procParams RPAREN block
-  ;
-\end{verbatim}
-
-\begin{verbatim}
-procParams
-  : process (COMMA process)*
-  ;
-\end{verbatim}
-
-La notazione \texttt{(...)*} implementa direttamente la ripetizione \{ ... \} della EBNF.
-
-\subsection*{Blocchi e statement}
-
-\begin{verbatim}
-block
-  : LBRACE stmt* RBRACE
-  ;
-\end{verbatim}
-
-\begin{verbatim}
-stmt
-  : interactionStmt
-  | callStmt
-  | ifLocalStmt
-  | ifRaceStmt
-  ;
-\end{verbatim}
-
-\subsection*{Condizionali}
-
-\begin{verbatim}
-ifLocalStmt
-  : IF LPAREN procExpr RPAREN block ELSE block
-  ;
-\end{verbatim}
-
-\begin{verbatim}
-ifRaceStmt
-  : IF LPAREN raceId RPAREN block ELSE block
-  ;
-\end{verbatim}
-
-\subsection*{Istruzioni}
-
-\begin{verbatim}
-interactionStmt
-  : interaction SEMI
-  ;
-\end{verbatim}
-
-\begin{verbatim}
-interaction
-  : comm
-  | select
-  | assign
-  | race
-  | discharge
-  ;
-\end{verbatim}
-
-\subsection*{Comunicazione}
-
-\begin{verbatim}
-comm
-  : procExpr ARROW procVar
-  ;
-\end{verbatim}
-
-\subsection*{Race}
-
-\begin{verbatim}
-race
-  : RACE raceId COLON procExpr COMMA procExpr ARROW procVar
-  ;
-\end{verbatim}
-
-\subsection*{Discharge}
-
-\begin{verbatim}
-discharge
-  : DISCHARGE raceId COLON process ARROW procVar
-  ;
-\end{verbatim}
-
-\subsection*{Regole lessicali}
-
-\begin{verbatim}
-MAIN      : 'main' ;
-PROC      : 'proc' ;
-CALL      : 'call' ;
-IF        : 'if' ;
-ELSE      : 'else' ;
-RACE      : 'race' ;
-DISCHARGE : 'discharge' ;
-TRUE      : 'true' ;
-FALSE     : 'false' ;
-ID        : [a-zA-Z] [a-zA-Z0-9_]* ;
-\end{verbatim}
-
-\subsection*{Gestione del lessico}
-
-\begin{verbatim}
-INT : [0-9]+ ;
-
-WS            : [ \t\r\n]+ -> skip ;
-LINE_COMMENT  : '//' ~[\r\n]* -> skip ;
-BLOCK_COMMENT : '/*' .*? '*/' -> skip ;
-\end{verbatim}
-
-\section{Esempio di programma}
-
-Per illustrare in modo unitario la sintassi concreta e la sua formalizzazione, si presenta un esempio completo di programma in Racing Choreographies.
-
-Il programma descrive una semplice interazione tra quattro processi: un client $c$, due worker $w1$ e $w2$, e un server $s$.
-
-Il client invia una richiesta al server. I due worker ricevono la richiesta e competono per fornire una risposta al server tramite una race. Il primo worker che consegna il proprio valore determina il risultato principale, che viene inoltrato al client. Il valore del worker perdente non viene viene recuperato tramite il costrutto di discharge e memorizzato separatamente.
-
-\begin{verbatim}
+Le espressioni del linguaggio sono volutamente limitate a valori letterali o identificatori. Non sono presenti operatori aritmetici poiché il focus del linguaggio è descrivere interazioni tra processi piuttosto che calcoli locali.
+\section{Sintassi concreta attraverso un esempio}
+Per illustrare la sintassi concreta del linguaggio Racing Choreographies si riprende l'esempio completo di programma introdotto precedentemente che utilizza i costrutti del linguaggio.
+Il programma descrive una semplice interazione tra quattro processi: un client \texttt{c}, due worker \texttt{w1} e \texttt{w2}, e un server \texttt{s}. Il client invia una richiesta al server; i due worker ricevono la richiesta e competono per fornire una risposta tramite una \texttt{race}. Il valore prodotto dal worker vincitore viene inviato al client, mentre il valore del worker perdente viene successivamente recuperato tramite il costrutto di \texttt{discharge}.
+Così è come appare il programma completo secondo la sintassi concreta:
+\begin{lstlisting}
 proc Request(c, w1, w2, s) {
 
     c.req -> s.req;
@@ -554,4 +82,70 @@ proc Request(c, w1, w2, s) {
 main {
     call Request(c, w1, w2, s);
 }
-\end{verbatim}
+\end{lstlisting}
+
+Il programma è composto da una definizione di procedura e da una coreografia principale.
+
+La procedura \texttt{Request} descrive l’interazione tra i quattro processi coinvolti, mentre il blocco \texttt{main} rappresenta il punto di ingresso dell’esecuzione del programma e invoca la procedura tramite la keyword \texttt{call}.
+
+La prima istruzione
+
+\begin{tcolorbox}[colback=white,colframe=black!35,boxrule=0.4pt]
+\begin{lstlisting}
+c.req -> s.req;
+\end{lstlisting}
+\end{tcolorbox}
+
+rappresenta una comunicazione globale: il processo \texttt{c} invia al processo \texttt{s} il valore della variabile \texttt{req}, che viene memorizzato nella variabile \texttt{req} del server.
+
+Le istruzioni successive
+
+\begin{tcolorbox}[colback=white,colframe=black!35,boxrule=0.4pt]
+\begin{lstlisting}
+w1.r = req;
+w2.r = req;
+\end{lstlisting}
+\end{tcolorbox}
+
+sono assegnamenti locali, che permettono ai worker di preparare il valore che verrà utilizzato nella competizione.
+
+La competizione è espressa dal costrutto di \texttt{race}:
+
+\begin{tcolorbox}[colback=white,colframe=black!35,boxrule=0.4pt]
+\begin{lstlisting}
+race s[k] : w1.r , w2.r -> s.ans;
+\end{lstlisting}
+\end{tcolorbox}
+
+In questa istruzione i processi \texttt{w1} e \texttt{w2} competono per fornire un valore al processo \texttt{s}. Il valore del processo vincitore viene assegnato alla variabile \texttt{s.ans}. L’identificatore \texttt{s[k]} rappresenta la race con id \texttt{k} e consente di riferirsi successivamente al suo esito.
+
+L’esito della competizione viene utilizzato nel costrutto condizionale
+
+\begin{tcolorbox}[colback=white,colframe=black!35,boxrule=0.4pt]
+\begin{lstlisting}
+if (s[k]) { ... } else { ... }
+\end{lstlisting}
+\end{tcolorbox}
+
+che seleziona il ramo di esecuzione in base al vincitore della race.
+
+Nel ramo selezionato il valore vincente viene inviato al client tramite una comunicazione:
+
+\begin{tcolorbox}[colback=white,colframe=black!35,boxrule=0.4pt]
+\begin{lstlisting}
+s.ans -> c.res;
+\end{lstlisting}
+\end{tcolorbox}
+
+Successivamente il server invia al client una selezione di etichetta (\texttt{FromW1} oppure \texttt{FromW2}) per indicare quale worker ha prodotto il risultato.
+
+Infine, il costrutto
+
+\begin{tcolorbox}[colback=white,colframe=black!35,boxrule=0.4pt]
+\begin{lstlisting}
+discharge s[k] : w1 -> s.lost
+discharge s[k] : w2 -> s.lost
+\end{lstlisting}
+\end{tcolorbox}
+
+consente di recuperare il valore prodotto dal processo perdente della race. Questo valore viene memorizzato nella variabile \texttt{s.lost}, rendendo esplicita la sincronizzazione con il processo che non ha vinto la competizione.

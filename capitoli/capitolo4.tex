@@ -1,663 +1,155 @@
-\chapter{Implementazione del Parser}
+\chapter{Implementazione del parser}
 
-In questo capitolo viene descritto il front-end del tool \texttt{rc\_parser}, che si occupa dell’analisi lessicale e sintattica, della costruzione di una rappresentazione interna del programma e della validazione strutturale post-parsing.
+Il contributo di questa tesi è l’implementazione di un tool per l’esecuzione di programmi scritti nel linguaggio \textit{Racing Choreographies}. Il sistema realizzato comprende due componenti principali: un front-end del linguaggio, responsabile dell’analisi lessicale e grammaticale dei programmi e della costruzione della loro rappresentazione interna (AST), e un simulatore che esegue i programmi secondo la semantica operazionale presentata nel Capitolo~2. 
 
-Nel seguito vengono illustrate in dettaglio le scelte architetturali, l’integrazione di ANTLR nel sistema di build, la trasformazione dal parse tree all’AST, i meccanismi di validazione statica e le modalità di esposizione del tool tramite interfaccia a riga di comando.
+L’architettura del tool è organizzata come una pipeline di trasformazioni successive che partono dal codice sorgente del programma e producono rappresentazioni via via più strutturate. Il flusso generale del sistema è rappresentato dal seguente schema:
 
-\section{Overview del sistema}
+\begin{center}
+\begin{tikzpicture}[
+    node distance=0.9cm,
+    artifact/.style={
+        draw,
+        rounded corners,
+        minimum width=4.8cm,
+        minimum height=0.95cm,
+        align=center
+    },
+    process/.style={
+        draw,
+        rectangle,
+        minimum width=4.2cm,
+        minimum height=0.85cm,
+        align=center,
+        fill=gray!10
+    },
+    arrow/.style={->, thick, >=Latex},
+    groupbox/.style={
+        draw,
+        dashed,
+        rounded corners,
+        inner sep=0.35cm
+    }
+]
 
-Il tool \texttt{rc\_parser} è un’applicazione a riga di comando sviluppata in C++17 che implementa il front-end del linguaggio Racing Choreographies.
+\node[artifact] (src) {File sorgente\\\texttt{.rc}};
+\node[process, below=of src] (antlr) {Lexer + Parser\\ANTLR4};
+\node[artifact, below=of antlr] (cst) {Concrete Syntax Tree\\(CST)};
+\node[process, below=of cst] (builder) {AstBuilderVisitor};
+\node[artifact, below=of builder] (ast) {Abstract Syntax Tree\\(AST)};
+\node[process, below=of ast] (validator) {Validator};
+\node[artifact, below=of validator] (vast) {Programma validato};
+\node[process, below=of vast] (sim) {Simulatore};
+\node[artifact, below=of sim] (exec) {Simulazione della coreografia};
 
-Per la generazione automatica del lexer e del parser viene utilizzato ANTLR4 (ANother Tool for Language Recognition), un generatore di parser che, a partire da una grammatica formale, produce codice sorgente per l’analisi lessicale e sintattica in diversi linguaggi di programmazione, tra cui C++.
+\draw[arrow] (src) -- (antlr);
+\draw[arrow] (antlr) -- (cst);
+\draw[arrow] (cst) -- (builder);
+\draw[arrow] (builder) -- (ast);
+\draw[arrow] (ast) -- (validator);
+\draw[arrow] (validator) -- (vast);
+\draw[arrow] (vast) -- (sim);
+\draw[arrow] (sim) -- (exec);
 
-La pipeline complessiva del sistema è la seguente:
+\node[groupbox, fit=(antlr)(cst)(builder)(ast)(validator)(vast),
+      label=right:{Front-end}] {};
 
-\[
-\begin{aligned}
-&\text{Input (.rc / stdin)} \\
-&\downarrow \\
-&\text{Lexer (ANTLR)} \\
-&\downarrow \\
-&\text{Parser (ANTLR)} \\
-&\downarrow \\
-&\text{Parse Tree (CST)} \\
-&\downarrow \\
-&\text{AST Builder} \\
-&\downarrow \\
-&\text{Abstract Syntax Tree (AST)} \\
-&\downarrow \\
-&\text{Validazione strutturale} \\
-&\downarrow \\
-&\text{Simulatore (Capitolo 5)}
-\end{aligned}
-\]
+\end{tikzpicture}
+\end{center}
 
-L’input può essere fornito tramite file oppure attraverso lo standard input. Il lexer e il parser, generati automaticamente a partire dalla grammatica definita nel Capitolo 3, producono un Concrete Syntax Tree (CST) che riflette la struttura del programma secondo le regole sintattiche.
+Nella prima fase il codice sorgente del programma viene passato in input a un \textit{lexer}, che produce una sequenza di tokens. Questa sequenza viene poi fornita in input a un \textit{parser}, il quale costruisce un \textit{Concrete Syntax Tree} (CST), ovvero una rappresentazione ad albero che riflette fedelmente la struttura sintattica del programma secondo la grammatica del linguaggio, includendo tutti i dettagli derivanti dalle regole grammaticali.
 
-Il CST viene trasformato in un Abstract Syntax Tree (AST) progettato come rappresentazione intermedia che è indipendente dalla struttura specifica della grammatica ANTLR. L’AST è fondamentale in quanto tutte le fasi successive, ovvero validazione statica e simulazione operazionale, operano esclusivamente su questa struttura.
+Successivamente, il CST viene trasformato in un \textit{Abstract Syntax Tree} (AST). L’AST rappresenta una versione più compatta e astratta della struttura sintattica del programma: elimina gli elementi sintattici non necessari (ad esempio nodi intermedi della grammatica o simboli ausiliari) e mantiene solo le informazioni rilevanti per il modello del linguaggio come descritto nel Capitolo~2.
 
-La fase di validazione strutturale verifica proprietà statiche di base del programma, come l’unicità delle definizioni di procedura e la correttezza delle chiamate rispetto all’arità dichiarata.
+Una volta costruito l’AST, il tool esegue una fase di validazione che verifica alcune proprietà strutturali dei programmi. Se il programma risulta valido, l’AST può essere utilizzato dal simulatore (Capitolo~5) per eseguire la coreografia secondo la semantica operazionale vista nel Capitolo~2.
 
-L’architettura è quindi modulare: il codice generato da ANTLR è confinato al livello di analisi sintattica, mentre la rappresentazione interna del linguaggio e la logica di controllo sono separate. Questa separazione consente di mantenere indipendenti i livelli di grammatica, struttura dell’AST e modello di macchina astratta ed è pensata per garantire l’estendibilità del sistema.
+In questo capitolo viene descritto il front-end del tool.
 
 \section{Architettura del front-end}
 
-La directory principale del parser è organizzata come segue:
+Il front-end è costruito utilizzando il framework ANTLR4 \cite{antlr4tool}, che permette di generare automaticamente lexer e parser in diversi linguaggi di programmazione; per questo tool è stato utilizzato C++. A partire dalla grammatica definita nel Capitolo~3, ANTLR genera il codice necessario per riconoscere la struttura sintattica dei programmi e costruire il loro albero sintattico. L’implementazione completa del tool è disponibile nel repository del progetto \cite{rcparserrepo}. In particolare, lexer e parser si trovano nella directory \texttt{/generated}, mentre la grammatica è definita nel file \texttt{RacingChoreo.g4} all’interno della directory \texttt{/grammar}.
 
+Il flusso del front-end generato da ANTLR è descritto nel seguente schema:
+
+\begin{center}
+\begin{tabular}{c}
+\textbf{File sorgente} (\texttt{.rc}) \\
+$\downarrow$ \\
+\textbf{Lexer} (ANTLR) \\
+$\downarrow$ \\
+\textbf{Parser} (ANTLR) \\
+$\downarrow$ \\
+\textbf{Concrete Syntax Tree (CST)}
+\end{tabular}
+\end{center}
+
+Supponiamo ora di avere un \textit{file.rc} scritto secondo la sintassi concreta vista nel Capitolo~2 che rappresenta il programma dell'esempio introdotto nei capitoli precedenti, in cui due worker $w1$ e $w2$ competono tramite una race per inviare un valore al processo $s$. Consideriamo ora questo frammento di codice del programma:
+
+\begin{tcolorbox}[colback=white,colframe=black!35,boxrule=0.4pt]
+\begin{lstlisting}
+race s[k] : w1.r , w2.r -> s.ans;
+\end{lstlisting}
+\end{tcolorbox}
+Quando questo programma viene dato in input al tool, la prima trasformazione consiste nella conversione del codice sorgente in una sequenza di tokens. Il tool permette di visualizzare questo risultato tramite il comando:
+
+\begin{tcolorbox}[colback=black!2,colframe=black!35,boxrule=0.4pt]
 \begin{verbatim}
-grammar/
-    RacingChoreo.g4
-
-generated/
-    RacingChoreoLexer.h/.cpp
-    RacingChoreoParser.h/.cpp
-    RacingChoreoBaseVisitor.h/.cpp
-    RacingChoreoVisitor.h/.cpp
-
-src/
-    main.cpp
-    ErrorListener.h/.cpp
-    Validation.h/.cpp
-
-    ast/
-        Ast.h
-
-    AstBuilderVisitor.h/.cpp
-    AstPrinter.h/.cpp
-    AstJson.h/.cpp
+> rc_parser tokens <file.rc>
 \end{verbatim}
+\end{tcolorbox}
 
-La cartella \texttt{grammar/} contiene la specifica formale del linguaggio in formato ANTLR.
+L’output del lexer mostra i token riconosciuti nel programma insieme alla loro posizione nel file sorgente. Ad esempio, per l’istruzione precedente si ottiene:
 
-Durante la fase di build, ANTLR genera automaticamente il codice C++ del lexer e del parser all’interno della directory \texttt{generated/}.
+\begin{center}
+\end{center}
 
-Tutta la logica semantica e strutturale del linguaggio è invece implementata nella directory \texttt{src/}. In particolare:
-
-\begin{itemize}
-    \item \texttt{AstBuilderVisitor} realizza la trasformazione dal parse tree all’AST.
-    \item \texttt{ast/Ast.h} definisce la struttura tipizzata dell’Abstract Syntax Tree.
-    \item \texttt{Validation} implementa i controlli statici post-parsing.
-    \item \texttt{ErrorListener} raccoglie e struttura gli errori sintattici.
-    \item \texttt{AstPrinter} e \texttt{AstJson} forniscono modalità di visualizzazione dell’AST.
-    \item \texttt{main.cpp} gestisce l’intera pipeline e l’interfaccia a linea di comando.
-\end{itemize}
-
-La generazione del parser è integrata nel sistema di build tramite CMake. In particolare, viene definito un \texttt{add\_custom\_command} che invoca il tool ANTLR con le opzioni:
-
+\begin{samepage}
 \begin{verbatim}
-java -jar antlr-4.x-complete.jar
-    -Dlanguage=Cpp
-    -visitor
-    -no-listener
-    -o generated
-    RacingChoreo.g4
+6:4  RACE   "race"
+6:9  ID     "s"
+6:10 LBRACK "["
+6:11 ID     "k"
+6:12 RBRACK "]"
+6:14 COLON  ":"
+6:16 ID     "w1"
+6:18 DOT    "."
+6:19 ID     "r"
+6:21 COMMA  ","
+6:23 ID     "w2"
+6:25 DOT    "."
+6:26 ID     "r"
+6:28 ARROW  "->"
+6:31 ID     "s"
+6:32 DOT    "."
+6:33 ID     "ans"
+6:36 SEMI   ";"
 \end{verbatim}
+\end{samepage}
 
-L’architettura risultante è divisa in tre livelli principali:
+Ogni riga dell’output indica la posizione del token nel file sorgente (linea e colonna), il tipo di token riconosciuto e il testo corrispondente nel programma.
 
-\bigskip
+La sequenza di token prodotta dal lexer costituisce l’input per il parser, che costruisce il \textit{Concrete Syntax Tree}. Il CST rappresenta la struttura sintattica del programma e contiene nodi che riflettono direttamente le produzioni grammaticali.
 
-\textbf{Sintassi (ANTLR)}  
-Lexer + Parser $\rightarrow$ CST
+Nel caso dell’istruzione di race il parser costruisce un sottoalbero del CST che segue direttamente le produzioni della grammatica utilizzate per riconoscere tale istruzione. I nodi dell’albero corrispondono quindi sia ai token del programma (ad esempio \texttt{RACE}, \texttt{ID}, \texttt{COLON}, \texttt{ARROW}) sia alle regole grammaticali che strutturano l’istruzione.
 
-\bigskip
+Di conseguenza il CST contiene nodi per ciascun elemento sintattico della frase inclusi simboli puramente strutturali come parentesi quadre, virgole e separatori. Per l’istruzione di race l’albero include, ad esempio, nodi distinti per il costrutto \texttt{race}, per l’identificatore del processo ricevente \texttt{s}, per la variabile \texttt{k}, per le due espressioni concorrenti \texttt{w1.r} e \texttt{w2.r}, per il simbolo \texttt{->} e per la destinazione \texttt{s.ans}.
 
-\textbf{Struttura (AST)}  
-AstBuilderVisitor $\rightarrow$ AST tipizzato
+Questa rappresentazione è utile per verificare che il programma rispetti la sintassi del linguaggio, ma risulta troppo dettagliata per le fasi successive del sistema. Molti nodi dell’albero rappresentano infatti solo elementi della sintassi concreta e non corrispondono ai costrutti del modello del linguaggio. Per questo motivo il CST viene trasformato in un \textit{Abstract Syntax Tree} (AST).
+\section{Abstract Syntax Tree}
 
-\bigskip
+Il front-end del tool introduce una seconda rappresentazione interna del programma ovvero l’\textit{Abstract Syntax Tree} (AST) che rappresenta il programma in una forma più compatta e più vicina alla struttura del linguaggio. In particolare, mentre il CST riflette il modo in cui il programma è stato riconosciuto dalla grammatica, l’AST mette direttamente in evidenza i costrutti del linguaggio, come procedure, blocchi di istruzioni, interazioni e costrutti di controllo.
 
-\textbf{Controlli statici}  
-Validator $\rightarrow$ ValidationError
+Consideriamo ora il \textit{file.rc} del programma dell'esempio introdotto in precedenza per vedere come viene rappresentato. Il tool permette di stampare una rappresentazione testuale sul terminale dell’albero tramite il comando:
 
-\bigskip
-
-Questa separazione garantisce che il parse tree non venga mai utilizzato direttamente nelle fasi semantiche, che l’AST rimanga indipendente dalla struttura interna della grammatica e che eventuali modifiche sintattiche non impattino il modello di esecuzione.
-
-\section{Analisi lessicale e sintattica}
-
-L’analisi lessicale e sintattica del linguaggio è delegata al codice generato automaticamente da ANTLR4 a partire dalla grammatica \texttt{RacingChoreo.g4}.
-
-ANTLR genera:
-
-\begin{itemize}
-    \item il lexer;
-    \item il parser;
-    \item le classi base per il pattern Visitor.
-\end{itemize}
-
-L’analisi sintattica è incapsulata nella struttura pipeline che inizializza in sequenza:
-
-\[
-\texttt{ANTLRInputStream}
-\rightarrow
-\texttt{RacingChoreoLexer}
-\rightarrow
-\texttt{CommonTokenStream}
-\rightarrow
-\texttt{RacingChoreoParser}
-\]
-
-L’entry point del parser è la regola \texttt{program}, la quale produce un \texttt{ProgramContext*} corrispondente alla radice del CST. Il risultato di questa fase è una rappresentazione del programma conforme alla grammatica.
-
-La gestione degli errori sintattici si basa sul meccanismo di error reporting fornito da ANTLR, esteso tramite un \texttt{ErrorListener}. Questo componente intercetta gli errori prodotti dal lexer o dal parser e li memorizza in una struttura interna senza interrompere immediatamente l’esecuzione.
-
-
-\section{Costruzione dell’AST}
-
-Il Concrete Syntax Tree (CST) prodotto da ANTLR riflette direttamente la struttura derivazionale della grammatica. Tale rappresentazione è adatta alla fase di parsing, ma non è adatta alle fasi successive di analisi e simulazione, in quanto dipendente dall’organizzazione delle regole sintattiche.
-
-Per questo motivo si introduce un livello intermedio esplicito: Abstract Syntax Tree (AST).
-
-\subsection*{Struttura generale dell’albero}
-
-La radice dell’AST è il nodo \texttt{Program}:
-
+\begin{tcolorbox}[colback=black!2,colframe=black!35,boxrule=0.4pt]
 \begin{verbatim}
-struct Program {
-    std::vector<std::unique_ptr<ProcDef>> procedures;
-    std::unique_ptr<Main> main;
-    SourceRange loc;
-};
+> rc_parser ast file.rc
 \end{verbatim}
+\end{tcolorbox}
 
-Un programma è composto da:
+L’output relativo al programma di esempio è il seguente:
 
-\begin{itemize}
-    \item un insieme di definizioni di procedura (\texttt{ProcDef});
-    \item un blocco \texttt{main};
-    \item informazioni di localizzazione (\texttt{SourceRange}).
-\end{itemize}
-
-L’uso di \texttt{std::unique\_ptr} rende esplicita la proprietà gerarchica dei nodi e impedisce aliasing.
-
-\subsection*{Modellazione dei costrutti elementari}
-
-Gli identificatori sono modellati come alias di \texttt{std::string}:
-
-\begin{verbatim}
-using Process  = std::string;
-using Var      = std::string;
-using Label    = std::string;
-using ProcName = std::string;
-\end{verbatim}
-
-\subsection*{Espressioni}
-
-Il linguaggio supporta espressioni limitate a valori (\texttt{INT}, \texttt{true}, \texttt{false}) e variabili.
-
-La rappresentazione è:
-
-\begin{verbatim}
-struct Value {
-    enum class Kind { Int, Bool };
-    Kind kind;
-    int intValue = 0;
-    bool boolValue = false;
-    SourceRange loc;
-};
-
-struct ExprVar {
-    Var name;
-    SourceRange loc;
-};
-
-using Expr = std::variant<Value, ExprVar>;
-\end{verbatim}
-
-\subsection*{Riferimenti localizzati}
-
-Per modellare espressioni e variabili qualificate da processo:
-
-\begin{verbatim}
-struct ProcExpr {
-    Process process;
-    Expr expr;
-    SourceRange loc;
-};
-
-struct ProcVar {
-    Process process;
-    Var var;
-    SourceRange loc;
-};
-\end{verbatim}
-
-Per identificare una race:
-
-\begin{verbatim}
-struct RaceId {
-    Process process;
-    std::string key;
-    SourceRange loc;
-};
-\end{verbatim}
-
-Queste strutture rappresentano direttamente le forme sintattiche: \texttt{p.e}, \texttt{p.x}, \texttt{s[k]}.
-
-\subsection*{Istruzioni}
-
-Le istruzioni sono modellate come un tipo somma:
-
-\begin{verbatim}
-using Interaction = std::variant<
-    Comm,
-    Select,
-    Assign,
-    Race,
-    Discharge
->;
-\end{verbatim}
-
-Ogni istruzione è definita come struttura autonoma, ad esempio:
-
-\begin{verbatim}
-struct Race {
-    RaceId id;
-    ProcExpr left;
-    ProcExpr right;
-    ProcVar target;
-    SourceRange loc;
-};
-\end{verbatim}
-
-\subsection*{Statement e controllo di flusso}
-
-\begin{verbatim}
-using Stmt = std::variant<
-    InteractionStmt,
-    CallStmt,
-    IfLocalStmt,
-    IfRaceStmt
->;
-\end{verbatim}
-
-I costrutti condizionali contengono blocchi annidati:
-
-\begin{verbatim}
-struct IfLocalStmt {
-    ProcExpr condition;
-    std::unique_ptr<Block> thenBlock;
-    std::unique_ptr<Block> elseBlock;
-    SourceRange loc;
-};
-\end{verbatim}
-
-L’uso di \texttt{std::unique\_ptr<Block>} esprime la struttura gerarchica dell’albero.
-
-\subsection*{Struttura dei blocchi}
-
-\begin{verbatim}
-struct Block {
-    std::vector<std::unique_ptr<Stmt>> statements;
-    SourceRange loc;
-};
-\end{verbatim}
-
-\subsection*{Costruzione dell’AST (CST → AST)}
-
-La trasformazione dal parse tree all’AST è implementata in:
-
-\begin{verbatim}
-src/AstBuilderVisitor.h
-src/AstBuilderVisitor.cpp
-\end{verbatim}
-
-La classe principale è:
-
-\begin{verbatim}
-class AstBuilderVisitor final : public RacingChoreoBaseVisitor
-\end{verbatim}
-
-La costruzione avviene tramite metodi dedicati:
-
-\begin{verbatim}
-std::unique_ptr<ast::Program> buildProgram(...);
-std::unique_ptr<ast::Block>   buildBlock(...);
-std::unique_ptr<ast::Stmt>    buildStmt(...);
-ast::Interaction              buildInteraction(...);
-ast::Race                     buildRace(...);
-\end{verbatim}
-
-La trasformazione implementa:
-
-\begin{itemize}
-    \item mapping esplicito tra regole ANTLR e nodi AST;
-    \item eliminazione di nodi intermedi non rilevanti semanticamente;
-    \item costruzione manuale delle varianti (\texttt{std::variant});
-    \item inizializzazione sistematica del campo \texttt{loc}.
-\end{itemize}
-
-Ad esempio, la costruzione di un valore intero avviene tramite:
-
-\begin{verbatim}
-val.kind = ast::Value::Kind::Int;
-val.intValue = std::stoi(vctx->INT()->getText());
-\end{verbatim}
-
-La propagazione delle informazioni di localizzazione è garantita dal fatto che ogni nodo riceve una \texttt{SourceRange} costruita a partire da:
-
-\begin{verbatim}
-ctx->getStart();
-ctx->getStop();
-\end{verbatim}
-
-Il visitor mantiene il nome del file sorgente e assegna:
-
-\begin{verbatim}
-node.loc = locFrom(ctx);
-\end{verbatim}
-
-\section{Validazione post-parsing}
-
-La fase di validazione strutturale viene eseguita immediatamente dopo la costruzione dell’AST e prima dell’invocazione del simulatore.
-
-La classe principale è:
-
-\begin{verbatim}
-class Validator final {
-public:
-    std::vector<ValidationError> validate(const ast::Program& program);
-};
-\end{verbatim}
-
-Gli errori sono rappresentati tramite:
-
-\begin{verbatim}
-struct ValidationError {
-    std::string file;
-    uint32_t line;
-    uint32_t col;
-    std::string message;
-};
-\end{verbatim}
-
-Questa struttura riutilizza le informazioni di localizzazione propagate nell’AST (\texttt{SourceRange}).
-
-La validazione si articola in due fasi principali:
-
-\begin{enumerate}
-    \item \texttt{validateProcTable(program);}
-    \item \texttt{validateProgramBody(program);}
-\end{enumerate}
-
-\subsection*{1) Costruzione della tabella delle procedure}
-
-Durante la prima fase viene costruita una tabella interna:
-
-\begin{verbatim}
-std::unordered_map<std::string, ProcInfo> procs_;
-
-struct ProcInfo {
-    size_t arity;
-    ast::SourceRange loc;
-};
-\end{verbatim}
-
-Per ogni \texttt{ProcDef} vengono registrati:
-
-\begin{itemize}
-    \item nome della procedura;
-    \item arità (numero di parametri);
-    \item posizione nel sorgente.
-\end{itemize}
-
-Viene verificata l’unicità del nome:
-
-\begin{verbatim}
-if (it != procs_.end()) {
-    addError(p->loc, "duplicate procedure ...");
-}
-\end{verbatim}
-
-Questa verifica garantisce che il programma non contenga definizioni multiple con lo stesso identificatore.
-
-\subsection*{2) Verifica delle chiamate di procedura}
-
-Durante l’attraversamento dell’AST vengono controllate le istruzioni \texttt{CallStmt}:
-
-\begin{verbatim}
-if (it == procs_.end()) {
-    addError(node.loc, "call to undefined procedure ...");
-}
-\end{verbatim}
-
-e successivamente la correttezza dell’arità:
-
-\begin{verbatim}
-if (expected != got) {
-    addError(node.loc, "wrong number of arguments ...");
-}
-\end{verbatim}
-
-Vengono quindi garantite due proprietà:
-
-\begin{itemize}
-    \item ogni procedura chiamata è stata definita;
-    \item il numero di argomenti è coerente con la definizione.
-\end{itemize}
-
-La validazione viene applicata all’intero programma attraversando ricorsivamente l’AST a partire da \texttt{validateProgramBody}.
-
-La visita procede in tre passi:
-
-\begin{itemize}
-    \item per ogni \texttt{ProcDef}, viene validato il blocco \texttt{body};
-    \item viene validato il blocco \texttt{main};
-    \item ogni \texttt{Block} viene percorso sequenzialmente tramite \texttt{validateBlock}.
-\end{itemize}
-
-\begin{verbatim}
-for (const auto& p : program.procedures) {
-    validateBlock(*p->body);
-}
-validateBlock(*program.main->body);
-\end{verbatim}
-
-La funzione \texttt{validateBlock} invoca \texttt{validateStmt} su ciascuno statement:
-
-\begin{verbatim}
-for (const auto& st : b.statements) {
-    validateStmt(*st);
-}
-\end{verbatim}
-
-Poiché \texttt{Stmt} è uno \texttt{std::variant}, la distinzione tra i diversi tipi di istruzione avviene tramite \texttt{std::visit}.
-
-Nel caso dei costrutti condizionali (\texttt{IfLocalStmt}, \texttt{IfRaceStmt}), la validazione prosegue ricorsivamente sui blocchi \texttt{then} ed \texttt{else}:
-
-\begin{verbatim}
-validateBlock(*node.thenBlock);
-validateBlock(*node.elseBlock);
-\end{verbatim}
-
-\section{Gestione degli errori}
-
-La gestione degli errori nel tool \texttt{rc\_parser} è strutturata su tre livelli distinti:
-
-\begin{itemize}
-    \item errori lessicali e sintattici (ANTLR);
-    \item errori di validazione strutturale (Validator);
-    \item errori runtime (Capitolo 5).
-\end{itemize}
-
-\subsection*{Errori sintattici}
-
-Gli errori generati da ANTLR vengono intercettati tramite un \texttt{ErrorListener} che non stampa direttamente l’errore ma lo accumula. Esso viene installato su lexer e parser nella pipeline, sostituendo i listener di default.
-
-\begin{verbatim}
-class ErrorListener final : public antlr4::BaseErrorListener
-\end{verbatim}
-
-Gli errori sintattici sono rappresentati tramite:
-
-\begin{verbatim}
-struct SyntaxError {
-    std::string file;
-    size_t line;
-    size_t column;
-    std::string message;
-    std::string offendingText;
-};
-\end{verbatim}
-
-\subsection*{Errori strutturali}
-
-Gli errori vengono raccolti in un vettore e restituiti al chiamante:
-
-\begin{verbatim}
-struct ValidationError {
-    std::string file;
-    uint32_t line;
-    uint32_t col;
-    std::string message;
-};
-\end{verbatim}
-
-Il tool supporta due modalità di output:
-
-\begin{itemize}
-    \item modalità testuale: stampa file, riga, colonna, messaggio di errore ed eventualmente lo snippet di codice con caret di evidenziazione;
-    \item modalità JSON (\texttt{--json}): produce una struttura stabile contenente i campi \texttt{errors} e \texttt{validationErrors}.
-\end{itemize}
-
-Gli exit code si distinguono in:
-
-\begin{itemize}
-    \item 0 in caso di esecuzione corretta;
-    \item 1 in presenza di errori di parsing o validazione;
-    \item 2 per errori di utilizzo della CLI o di I/O.
-\end{itemize}
-
-\section{Interfaccia a linea di comando}
-
-Il tool \texttt{rc\_parser} è progettato come applicazione CLI.
-
-La sintassi generale è:
-
-\begin{verbatim}
-rc_parser <command> <file> [opzioni]
-rc_parser <command> --stdin [opzioni]
-\end{verbatim}
-
-I comandi disponibili sono:
-
-\begin{itemize}
-    \item \texttt{tokens}: esegue esclusivamente l’analisi lessicale e stampa la sequenza dei token prodotti dal lexer.
-    \item \texttt{parse}: esegue lexer + parser + validazione strutturale.
-    \item \texttt{ast}: esegue parsing e validazione e produce una rappresentazione dell’AST.
-    \item \texttt{simulate}: esegue l’intera pipeline fino alla simulazione (descritta nel Capitolo 5).
-\end{itemize}
-
-\subsection*{Opzioni generali}
-
-\begin{itemize}
-    \item \texttt{--stdin}: legge l’input dallo standard input invece che da file.
-    \item \texttt{--json}: produce output in formato JSON.
-    \item \texttt{--quiet}: sopprime l’output testuale mantenendo l’exit code.
-    \item \texttt{--print-tree}: stampa il parse tree generato da ANTLR.
-    \item \texttt{--with-loc}: include le informazioni di localizzazione nella stampa dell’AST.
-\end{itemize}
-
-Le opzioni relative alla simulazione (\texttt{--trace}, \texttt{--final-store}, \texttt{--final-races}, \texttt{--race}, \texttt{--seed}, \texttt{--init}, ecc.) vengono utilizzate esclusivamente dal comando \texttt{simulate} e verranno discusse nel Capitolo 5.
-
-\subsection*{Esempi di utilizzo}
-
-Esecuzione del parsing di un programma corretto:
-
-\begin{verbatim}
-rc_parser parse ok_01.rc
-\end{verbatim}
-
-Output:
-
-\begin{verbatim}
-Parse OK
-\end{verbatim}
-
-\bigskip
-
-\textbf{Stampa della sequenza dei token}
-
-\begin{verbatim}
-rc_parser tokens ok_01.rc
-\end{verbatim}
-
-Output:
-
-\begin{verbatim}
-1:0  PROC  "proc"
-1:5  ID  "Request"
-1:12  LPAREN  "("
-1:13  ID  "c"
-1:14  COMMA  ","
-1:16  ID  "w1"
-1:18  COMMA  ","
-1:20  ID  "w2"
-1:22  COMMA  ","
-1:24  ID  "s"
-1:25  RPAREN  ")"
-1:27  LBRACE  "{"
-2:4  ID  "c"
-2:5  DOT  "."
-2:6  ID  "req"
-2:10  ARROW  "->"
-2:13  ID  "s"
-2:14  DOT  "."
-2:15  ID  "req"
-2:18  SEMI  ";"
-3:4  ID  "w1"
-3:6  DOT  "."
-3:7  ID  "r"
-3:9  ASSIGN  "="
-3:11  ID  "req"
-3:14  SEMI  ";"
-4:4  ID  "w2"
-4:6  DOT  "."
-4:7  ID  "r"
-4:9  ASSIGN  "="
-4:11  ID  "req"
-4:14  SEMI  ";"
-6:4  RACE  "race"
-6:9  ID  "s"
-6:10  LBRACK  "["
-6:11  ID  "k"
-6:12  RBRACK  "]"
-6:14  COLON  ":"
-6:16  ID  "w1"
-6:18  DOT  "."
-6:19  ID  "r"
-6:21  COMMA  ","
-6:23  ID  "w2"
-6:25  DOT  "."
-6:26  ID  "r"
-6:28  ARROW  "->"
-6:31  ID  "s"
-6:32  DOT  "."
-6:33  ID  "ans"
-6:36  SEMI  ";"
-8:4  IF  "if"
-8:7  LPAREN  "("
-8:8  ID  "s"
-8:9  LBRACK  "["
-8:10  ID  "k"
-8:11  RBRACK  "]"
-8:12  RPAREN  ")"
-8:14  LBRACE  "{"
-...
-21:1  EOF  "<EOF>"
-\end{verbatim}
-
-\bigskip
-
-\textbf{Generazione dell’AST}
-
-\begin{verbatim}
-rc_parser ast ok_01.rc
-\end{verbatim}
-
-Output:
-
+\begin{samepage}
+\begin{tcolorbox}[colback=black!2,colframe=black!35,boxrule=0.4pt]
 \begin{verbatim}
 Program
   Procedures (1)
@@ -692,17 +184,228 @@ Program
     Block (1 stmt)
       Call Request(c,w1,w2,s)
 \end{verbatim}
+\end{tcolorbox}
+\end{samepage}
 
-\bigskip
+L'implementazione completa dell'AST si trova nella directory \texttt{/src} nel repository del progetto \cite{rcparserrepo}. DI seguito vengono mostrate sono le principali parti di codice per descrivere le scelte progettuali che sono state fatte.
 
-L’interfaccia CLI integra anche il testing automatico.
+Alla radice dell’albero si trova il nodo \texttt{Program}, che contiene l’insieme delle definizioni di procedura e il blocco principale \texttt{Main}. Questa organizzazione riflette direttamente la struttura dei programmi del linguaggio.
 
-Nel file \texttt{CMakeLists.txt} sono definiti test tramite 
-\texttt{add\_test(...)} che invocano direttamente l’eseguibile.
+\begin{tcolorbox}[colback=white,colframe=black!35,boxrule=0.4pt]
+\begin{lstlisting}
+struct Program {
+    std::vector<std::unique_ptr<ProcDef>> procedures;
+    std::unique_ptr<Main> main;
+    SourceRange loc;
+};
+\end{lstlisting}
+\end{tcolorbox}
 
-L’esecuzione dell’intera suite è pensata per rendere il tool
-integrabile in pipeline di Continuous Integration e avviene tramite:
+Nell’implementazione il nodo radice è definito come una struttura che contiene una lista di procedure e il nodo principale.
 
+\begin{tcolorbox}[colback=white,colframe=black!35,boxrule=0.4pt]
+\begin{lstlisting}
+struct Block {
+    std::vector<std::unique_ptr<Stmt>> statements;
+    SourceRange loc;
+};
+\end{lstlisting}
+\end{tcolorbox}
+
+Si osserva che il corpo della procedura \texttt{Request} è rappresentato come un nodo \texttt{Block} contenente una sequenza di statement questo perchè, invece di mantenere nell’albero la struttura ricorsiva della grammatica, l’AST rappresenta esplicitamente i blocchi come sequenze di istruzioni.
+
+\begin{tcolorbox}[colback=white,colframe=black!35,boxrule=0.4pt]
+\begin{lstlisting}
+using Stmt = std::variant<
+    InteractionStmt,
+    CallStmt,
+    IfLocalStmt,
+    IfRaceStmt
+>;
+\end{lstlisting}
+\end{tcolorbox}
+
+Gli statement del linguaggio comprendono diverse forme sintattiche, tra cui interazioni, chiamate di procedura e condizionali. Nell’implementazione queste alternative sono modellate tramite un tipo somma.
+
+Questa soluzione consente di rappresentare in modo tipizzato le diverse forme che uno statement può assumere evitando di utilizzare gerarchie di classi.
+
+L’AST non viene generato direttamente dal parser. Il parser di ANTLR produce infatti un \textit{parse tree} che riflette la grammatica del linguaggio ma la costruzione dell’AST consiste in una trasformazione a partire dal parse tree.
+
+Questa trasformazione è implementata tramite il meccanismo dei \textit{visitor} fornito da ANTLR. In particolare, la classe \texttt{AstBuilderVisitor} è un’estensione della classe \texttt{RacingChoreoBaseVisitor} generata automaticamente da ANTLR, nella quale vengono ridefiniti i metodi di visita necessari per costruire i nodi dell’AST.
+
+Il tool definisce una classe \texttt{AstBuilderVisitor} che attraversa ricorsivamente il parse tree e costruisce i nodi dell’AST.
+
+\begin{tcolorbox}[colback=white,colframe=black!35,boxrule=0.4pt]
+\begin{lstlisting}
+class AstBuilderVisitor : public RacingChoreoBaseVisitor {
+public:
+    std::any visitProgram(
+        RacingChoreoParser::ProgramContext* ctx) override;
+};
+\end{lstlisting}
+\end{tcolorbox}
+
+Durante la visita dei nodi del CST, il visitor estrae le informazioni rilevanti e costruisce i nodi corrispondenti dell’AST.
+
+Consideriamo nuovamente l’istruzione di \texttt{race} presente nel programma come esempio per capire il funzionamento:
+
+\begin{tcolorbox}[colback=white,colframe=black!35,boxrule=0.4pt]
+\begin{lstlisting}
+race s[k] : w1.r , w2.r -> s.ans;
+\end{lstlisting}
+\end{tcolorbox}
+
+Nel CST, come abbiamo visto in precedenza, questa istruzione è rappresentata da diversi nodi sintattici derivanti dalla grammatica. Il visitor raccoglie invece solo le informazioni di nostro interesse e costruisce il nodo dell’AST:
+
+\begin{tcolorbox}[colback=white,colframe=black!35,boxrule=0.4pt]
+\begin{lstlisting}
+struct Race {
+    RaceId id;
+    ProcExpr left;
+    ProcExpr right;
+    ProcVar target;
+    SourceRange loc;
+};
+\end{lstlisting}
+\end{tcolorbox}
+
+Questa struttura rappresenta esplicitamente i componenti semantici della \texttt{race}: l’identificatore della competizione, le due espressioni concorrenti e la variabile del processo ricevente.
+
+Da notare come durante la costruzione dell’AST vengono propagate le informazioni di localizzazione del sorgente. Ogni nodo contiene infatti un campo \texttt{SourceRange} che registra la posizione della corrispondente porzione di codice nel file originale. Questa informazione non è necessaria per la semantica del linguaggio ma  è utile perchèp consente di produrre messaggi di errore più precisi nelle fasi successive del tool.
+
+\section{Validazione del programma}
+
+Una volta costruito l’\textit{Abstract Syntax Tree}, il front-end del tool esegue una fase di validazione del programma. Questa fase ha lo scopo di verificare alcune proprietà strutturali del programma.
+
+Come mostrato nella pipeline descritta all’inizio del capitolo, la validazione si colloca immediatamente dopo la costruzione dell’AST e prima dell’esecuzione della simulazione. Il validatore opera quindi su una rappresentazione del programma già indipendente dalla grammatica.
+
+Il compito principale di questa fase è individuare errori che non riguardano la sintassi del programma, ma la sua struttura o l’uso scorretto dei costrutti del linguaggio. In particolare, il validatore verifica le seguenti proprietà:
+
+\begin{itemize}
+
+\item \textbf{Corretta definizione e invocazione delle procedure.}  
+Il validatore verifica che ogni chiamata di procedura faccia riferimento a una procedura effettivamente definita nel programma e che non ci siano riferimenti a nomi di procedura inesistenti.
+
+\item \textbf{Coerenza dei parametri nelle chiamate di procedura.}  
+Per ogni istruzione \texttt{call}, viene controllato che il numero di processi passati come argomenti corrisponda al numero di parametri formali dichiarati nella definizione della procedura.
+
+\item \textbf{Uso coerente dei processi nelle interazioni.}  
+Il validatore verifica che i processi utilizzati nelle comunicazioni, nelle selezioni e negli altri costrutti del linguaggio siano tra quelli dichiarati nel contesto della procedura corrente.
+
+\item \textbf{Uso consistente degli identificatori di race.}  
+Per i costrutti \texttt{race}, \texttt{if (s[k])} e \texttt{discharge}, viene controllata la coerenza dell’identificatore della race e del processo associato, in modo da garantire che tali riferimenti siano utilizzati in modo consistente all’interno della coreografia.
+
+\item \textbf{Presenza delle informazioni necessarie per l’esecuzione.}  
+Viene verificato che la struttura del programma sia completa dal punto di vista esecutivo, ad esempio controllando la presenza del blocco \texttt{main}, che rappresenta il punto di ingresso dell’esecuzione.
+
+\end{itemize}
+
+Questi controlli sono implementati nel modulo \texttt{Validation} del front-end, che attraversa l’AST e verifica le proprietà richieste. In caso di errore, il validatore produce un messaggio associato alla posizione corrispondente nel file sorgente sfruttando le informazioni di localizzazione propagate durante la costruzione dell’AST.
+
+\section{Gestione degli errori}
+
+Gli errori possono emergere in tre momenti distinti del processo:
+
+\begin{itemize}
+\item durante l'analisi lessicale e sintattica;
+\item durante la validazione strutturale del programma;
+\item durante l'esecuzione della simulazione.
+\end{itemize}
+Nel front-end della pipeline gli errori lessicali e sintattici vengono intercettati tramite un \textit{error listener} che estende il meccanismo di gestione degli errori fornito da ANTLR.
+Esso permette di intercettare gli errori sintattici tramite l’interfaccia \texttt{BaseErrorListener}. Nel tool è stata definita una classe \texttt{ErrorListener} che estende questo meccanismo per raccogliere in modo strutturato le informazioni sugli errori rilevati durante il parsing.
+L’implementazione si trova nei file \texttt{ErrorListener} nella directory \texttt{/src} \cite{rcparserrepo}
+
+\begin{tcolorbox}[colback=white,colframe=black!35,boxrule=0.4pt]
+\begin{lstlisting}
+struct SyntaxError {
+    std::string file;
+    size_t line;
+    size_t column;
+    std::string message;
+    std::string offendingText;
+};
+\end{lstlisting}
+\end{tcolorbox}
+
+La classe ha una struttura dati che registra per ciascun errore:
+
+\begin{itemize}
+\item il file sorgente;
+\item la posizione dell’errore (linea e colonna);
+\item il messaggio generato dal parser;
+\item il token che ha causato l’errore.
+\end{itemize}
+Quando il parser rileva un errore, ANTLR invoca automaticamente il metodo \texttt{syntaxError}. Il metodo salva le informazioni relative all’errore all’interno di una lista mantenuta dall’oggetto listener.
+\subsection*{Errori lessicali}
+
+Gli errori lessicali vengono individuati dal lexer quando incontra sequenze di caratteri che non corrispondono ad alcun token definito nella grammatica.
+Consideriamo un programma banale per mostrare il funzionamento:
+\begin{tcolorbox}[colback=white,colframe=black!35,boxrule=0.4pt]
+\begin{lstlisting}
+main { @ }
+\end{lstlisting}
+\end{tcolorbox}
+Il simbolo \texttt{@} non è definito nella grammatica del linguaggio e il lexer produce quindi un errore di riconoscimento del token e si ottiene:
+
+\begin{tcolorbox}[colback=black!2,colframe=black!35,boxrule=0.4pt]
 \begin{verbatim}
-ctest --output-on-failure
+err_lex_01.rc:1:7: error: token recognition error at: '@'
+  main { @ }
+         ^
 \end{verbatim}
+\end{tcolorbox}
+L’errore indica la posizione esatta del carattere non riconosciuto nel file sorgente.
+
+\subsection*{Errori sintattici}
+
+Gli errori sintattici vengono rilevati dal parser quando la sequenza di token prodotta dal lexer non soddisfa le regole della grammatica del linguaggio.
+Consideriamo una istruzione di \texttt{race} in cui manca la virgola tra le due espressioni concorrenti:
+
+\begin{tcolorbox}[colback=white,colframe=black!35,boxrule=0.4pt]
+\begin{lstlisting}
+race p[k] : p.x q.y -> p.z;
+\end{lstlisting}
+\end{tcolorbox}
+Il parser segnala:
+
+\begin{tcolorbox}[colback=black!2,colframe=black!35,boxrule=0.4pt]
+\begin{verbatim}
+err_01.rc:4:18: error: missing ',' at 'q'
+    race p[k] : p.x q.y -> p.z;
+                    ^
+\end{verbatim}
+\end{tcolorbox}
+In modo analogo vengono segnalati errori dovuti a simboli mancanti o strutture incomplete, come ad esempio:
+
+\begin{itemize}
+\item espressioni mancanti in un assegnamento;
+\item variabili incomplete in una comunicazione;
+\item blocchi mancanti nei costrutti condizionali.
+\end{itemize}
+
+\subsection*{Errori strutturali}
+
+Come abbiamo visto nella sezione precedente una volta completato il parsing e costruito l’AST il tool esegue una fase di validazione del programma. In questa fase vengono individuati errori che non riguardano la sintassi del programma ma la sua struttura logica.
+Consideriamo ad esempio il seguente frammento di codice nel blocco per capire come vengono gestiti questi tipi di errori\texttt{main}:
+
+\begin{tcolorbox}[colback=white,colframe=black!35,boxrule=0.4pt]
+\begin{lstlisting}
+main {
+    call Request(c, w1, w2, s);
+}
+\end{lstlisting}
+\end{tcolorbox}
+In questo caso il programma tenta di invocare la procedura \texttt{Request}, che non è stata definita tra le procedure del programma. Durante la fase di validazione il tool rileva questa inconsistenza e produce il seguente messaggio di errore:
+
+\begin{tcolorbox}[colback=black!2,colframe=black!35,boxrule=0.4pt]
+\begin{verbatim}
+ok_01.rc:20:4: error: call to undefined procedure 'Request'
+      call Request(c, w1, w2, s);
+      ^
+\end{verbatim}
+\end{tcolorbox}
+
+\subsection*{Errori di esecuzione}
+
+Un ultima categoria di errori è quella degli errori che possono emergere durante l’esecuzione della coreografia nel simulatore.
+La gestione di questi errori è implementata all’interno della macchina di simulazione e viene descritta nel Capitolo~5.
