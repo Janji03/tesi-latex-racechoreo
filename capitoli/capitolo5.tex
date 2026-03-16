@@ -1,0 +1,638 @@
+\chapter{Implementazione del simulatore}
+
+Nel Capitolo~4 è stato descritto il front-end del tool grazie al quale si ottiene un programma validato che può essere passato al simulatore.
+
+Il simulatore ha il compito di eseguire il programma rappresentato nell’AST secondo la semantica operazionale introdotta nel Capitolo~2. In particolare il suo scopo è quello di interpretare tale programma e produrre un’evoluzione esecutiva osservabile.
+
+Il simulatore riceve in input un AST già costruito e validato e mantiene durante l’esecuzione uno stato globale della simulazione. Tale stato comprende lo store delle variabili dei processi, una memoria dedicata alle race e una traccia degli eventi eseguiti. A questi elementi si aggiunge una struttura di supporto per gestire l’avanzamento nei blocchi di istruzioni e le chiamate di procedura.
+
+L’output della simulazione produce una traccia passo-passo delle azioni svolte e lo stato finale delle componenti runtime.
+
+Il flusso ad alto livello del funzionamento del tool è illustrato in Figura~\ref{fig:tool-overview}.
+
+\clearpage
+\begin{figure}[p]
+\centering
+\begin{tikzpicture}[
+    node distance=0.9cm,
+    artifact/.style={
+        draw,
+        rounded corners,
+        minimum width=4.6cm,
+        minimum height=0.95cm,
+        align=center
+    },
+    process/.style={
+        draw,
+        rectangle,
+        minimum width=4.3cm,
+        minimum height=0.85cm,
+        align=center,
+        fill=gray!10
+    },
+    arrow/.style={->, thick, >=Latex},
+    groupbox/.style={
+        draw,
+        dashed,
+        rounded corners,
+        inner sep=0.35cm
+    }
+]
+
+% Front-end
+\node[artifact] (src) {File sorgente\\\texttt{.rc}};
+\node[process, below=of src] (antlr) {Lexer + Parser\\ANTLR4};
+\node[artifact, below=of antlr] (cst) {Concrete Syntax Tree\\(CST)};
+\node[process, below=of cst] (builder) {AstBuilderVisitor};
+\node[artifact, below=of builder] (ast) {Abstract Syntax Tree\\(AST)};
+\node[process, below=of ast] (validator) {Validator};
+\node[artifact, below=of validator] (vast) {AST validato};
+
+% Simulatore
+\node[process, below=1.2cm of vast] (sim) {Simulatore};
+
+\node[artifact, below left=1.0cm and 0.9cm of sim] (store)
+{Store $\Sigma$\\variabili dei processi};
+
+\node[artifact, below=1.0cm of sim] (races)
+{Race Memory $M$};
+
+\node[artifact, below right=1.0cm and 0.9cm of sim] (trace)
+{Trace\\eventi di esecuzione};
+
+\node[artifact, below=2.7cm of sim] (result)
+{Risultato della simulazione};
+
+% Frecce front-end
+\draw[arrow] (src) -- (antlr);
+\draw[arrow] (antlr) -- (cst);
+\draw[arrow] (cst) -- (builder);
+\draw[arrow] (builder) -- (ast);
+\draw[arrow] (ast) -- (validator);
+\draw[arrow] (validator) -- (vast);
+
+% Frecce simulatore
+\draw[arrow] (vast) -- (sim);
+\draw[arrow] (sim) -- (store);
+\draw[arrow] (sim) -- (races);
+\draw[arrow] (sim) -- (trace);
+
+% Composizione del risultato
+\draw[arrow] (store) |- (result);
+\draw[arrow] (races) -- (result);
+\draw[arrow] (trace) |- (result);
+
+% Raggruppamenti
+\node[groupbox, fit=(antlr)(cst)(builder)(ast)(validator)(vast)] {};
+\node[groupbox, fit=(sim)(store)(races)(trace)(result)] {};
+
+\end{tikzpicture}
+\caption{Flusso del funzionamento completo del tool dal file sorgente al risultato della simulazione.}
+\label{fig:tool-overview}
+\end{figure}
+\clearpage
+
+\section{Architettura del simulatore}
+
+In questa sezione viene descritta in maggiore dettaglio l’architettura del simulatore. Il simulatore è una macchina astratta che esegue il programma mantenendo esplicitamente lo stato della simulazione. L’esecuzione è modellata attraverso un insieme di strutture runtime che rappresentano la configurazione corrente della computazione.
+
+L'architettura è descritta dal seguente schema:
+
+\begin{center}
+\begin{tikzpicture}[
+    node distance=0.9cm,
+    artifact/.style={
+        draw,
+        rounded corners,
+        minimum width=4.1cm,
+        minimum height=0.9cm,
+        align=center
+    },
+    process/.style={
+        draw,
+        rectangle,
+        minimum width=4.5cm,
+        minimum height=0.95cm,
+        align=center,
+        fill=gray!10
+    },
+    smallbox/.style={
+        draw,
+        rounded corners,
+        minimum width=3.2cm,
+        minimum height=0.8cm,
+        align=center
+    },
+    arrow/.style={->, thick, >=Latex},
+    dashedarrow/.style={->, thick, dashed, >=Latex}
+]
+
+\node[artifact] (ast) {AST validato\\programma da eseguire};
+
+\node[artifact, below left=1.2cm and 1.4cm of ast] (stack)
+{Control Stack\\blocchi attivi e contesto};
+
+\node[process, below=2.1cm of ast] (loop)
+{-ciclo della macchina astratta\\-selezione della prossima istruzione\\-esecuzione del passo};
+
+\node[smallbox, below left=1.2cm and 2.2cm of loop] (store)
+{Store $\Sigma$\\valori correnti};
+
+\node[smallbox, below=1.2cm of loop] (races)
+{Race Memory $M$\\race risolte};
+
+\node[smallbox, below right=1.2cm and 2.2cm of loop] (trace)
+{Trace\\eventi osservabili};
+
+\node[artifact, below=3.2cm of loop] (result)
+{Risultato della simulazione\\store finale, race memory, trace, errori};
+
+\draw[arrow] (ast) -- (loop);
+\draw[arrow] (stack) -- (loop);
+
+\draw[arrow] (loop) -- (store);
+\draw[arrow] (loop) -- (races);
+\draw[arrow] (loop) -- (trace);
+
+\draw[dashedarrow] (loop.west) to[bend left=18] (stack.south);
+\draw[dashedarrow] (store) |- (loop);
+\draw[dashedarrow] (races) -- (loop);
+\draw[dashedarrow] (trace) |- (loop);
+
+\draw[arrow] (store) |- (result);
+\draw[arrow] (races) -- (result);
+\draw[arrow] (trace) |- (result);
+
+\end{tikzpicture}
+\end{center}
+
+L’elemento di partenza è l’AST validato prodotto dal front-end. Esso costituisce l’input della simulazione. Il simulatore attraversa progressivamente l’AST per determinare quale istruzione debba essere eseguita in ogni passo.
+
+Per governare l’avanzamento nell’AST il simulatore utilizza una struttura di controllo esplicita, rappresentata da una pila di frame di esecuzione. Questa componente, indicata nello schema come \textit{Control Stack}, mantiene il contesto corrente della simulazione: il blocco attivo, la posizione della prossima istruzione da eseguire e le informazioni per gestire le chiamate di procedura.
+
+Il nucleo del simulatore è costituito dal ciclo della macchina astratta che, ad ogni iterazione, individua la prossima istruzione da eseguire, ne determina l’effetto e aggiorna le strutture runtime. Questo ciclo realizza la transizione da una configurazione di esecuzione alla successiva traducendo in termini operativi il comportamento del linguaggio descritto formalmente nel Capitolo~2 ovvero:
+\[
+C, \Sigma, M \rightarrow C', \Sigma', M'
+\]
+
+
+Le strutture runtime aggiornate dal ciclo di esecuzione sono tre:
+
+\paragraph{Store $\Sigma$.}
+Lo store rappresenta la memoria delle variabili dei processi. Nell’implementazione esso è modellato come una mappa che associa a ogni coppia processo-variabile il valore corrente corrispondente. Tutte le operazioni che modificano i valori del programma come assegnamenti, comunicazioni o scritture prodotte da una race hanno come effetto un aggiornamento dello store.
+
+\paragraph{Race Memory $M$.}
+La memoria delle race è la struttura dedicata che per ogni race risolta conserva le informazioni necessarie a descriverne l’esito: i partecipanti, il vincitore, il perdente, i valori associati e lo stato di eventuale \texttt{discharge}. La scelta di una struttura dedicata serve per separare logicamente queste informazioni dallo store in quanto l’esito di una race non è solo un valore scritto in una variabile ma anche un’informazione di controllo che viene riutilizzata successivamente ad esempio nei costrutti \texttt{if (s[k])} e \texttt{discharge}.
+
+\paragraph{Trace.}
+La trace serve a raccogliere la sequenza degli eventi osservabili generati durante la simulazione. Ogni passo esecutivo può produrre un evento che descrive l’azione svolta, come un assegnamento, una comunicazione, la risoluzione di una race o una selezione. Questa componente ha il ruolo di mostrare l’output della simulazione permettendo di seguire l’evoluzione della coreografia in modo esplicito.
+
+\vspace{0.4cm}
+
+\noindent
+Oltre a queste tre componenti principali il simulatore utilizza alcuni elementi ausiliari necessari al controllo dell’esecuzione, come il contatore dei passi, la profondità delle chiamate di procedura, la policy di risoluzione delle race e il generatore pseudo-casuale usato nei casi nondeterministici. L’implementazione completa di tali elementi e delle strutture principali descritte in questa sezione è disponibile nei file delle directory \texttt{/src/sim} e \texttt{/src/runtime} nel repository del progetto \cite{rcparserrepo}.
+
+\section{Modello di esecuzione}
+
+Dal punto di vista operativo il simulatore esegue un programma come una successione di passi elementari. Ad ogni passo la macchina astratta considera la configurazione corrente della simulazione, individua la prossima istruzione da eseguire e ne applica l’effetto aggiornando lo stato runtime.
+Nel simulatore per rendere eseguibile la semantica del linguaggio, descritta come una relazione di transizione tra configurazioni, si utilizza un ciclo di esecuzione che legge una configurazione corrente, produce una nuova configurazione e ripete il processo sul nuovo stato ottenuto.
+
+Il modello di esecuzione adottato è rappresentato nel seguente schema:
+
+\begin{center}
+\begin{tikzpicture}[
+>=Latex,
+thick,
+box/.style={draw,rounded corners,minimum width=4.6cm,minimum height=1.15cm,align=center},
+proc/.style={draw,rounded corners,minimum width=4.6cm,minimum height=1.15cm,align=center,fill=gray!10},
+arrow/.style={->, thick}
+]
+
+\node[box] (conf) at (0,4)
+{Configurazione corrente\\
+control stack + store + race memory + trace};
+
+\node[proc] (select) at (5,1.3)
+{Selezione della\\prossima istruzione};
+
+\node[proc] (step) at (3,-3)
+{Valutazione del passo\\secondo la semantica operazionale};
+
+\node[box] (update) at (-3,-3)
+{Aggiornamento dello stato\\e produzione di eventi};
+
+\node[box] (next) at (-5,1.3)
+{Nuova configurazione};
+
+\draw[arrow] (conf) -- (select);
+\draw[arrow] (select) -- (step);
+\draw[arrow] (step) -- (update);
+\draw[arrow] (update) -- (next);
+\draw[arrow] (next) -- (conf);
+
+\end{tikzpicture}
+\end{center}
+
+Per descrivere il funzionamento del modello si consideri il seguente frammento di programma dell'esempio introdotto nei capitoli precedenti. In questo esempio il processo \texttt{s} invia un messaggio ai due worker per avviarne l’elaborazione. I worker producono quindi due possibili contributi che partecipano alla race. Poiché nel linguaggio considerato non sono ancora presenti operazioni aritmetiche o funzioni, i contributi dei worker sono rappresentati da costanti.
+
+\begin{tcolorbox}[colback=white,colframe=black!35,boxrule=0.4pt]
+\begin{lstlisting}
+s.start -> w1.start;
+s.start -> w2.start;
+
+w1.r = 7;
+w2.r = 5;
+
+race s[k] : w1.r , w2.r -> s.ans;
+\end{lstlisting}
+\end{tcolorbox}
+
+Assumiamo inoltre che la simulazione si trovi all’inizio del blocco che contiene queste istruzioni e che la memoria delle race e la trace siano inizialmente vuote. L’evoluzione del modello può allora essere rappresentata come una sequenza di configurazioni.
+
+\clearpage
+
+\paragraph{Configurazione iniziale.}
+All’inizio dell’esecuzione lo store non contiene ancora valori associati alle variabili del programma, mentre la race memory e la trace risultano vuote.
+
+\begin{tcolorbox}[colback=black!2,colframe=black!35,boxrule=0.4pt,height=0.65\textheight]
+\begin{verbatim}
+Control stack:
+  ip -> s.start -> w1.start;
+
+Store:
+  <empty>
+
+Race Memory:
+  <empty>
+
+Trace:
+  <empty>
+\end{verbatim}
+\end{tcolorbox}
+
+\clearpage
+
+\paragraph{Dopo il primo passo.}
+La macchina seleziona l’istruzione \texttt{s.start -> w1.start}. Il valore del messaggio viene trasferito dal server al primo worker e lo store viene aggiornato con la variabile \texttt{w1.start}. Il control stack avanza alla successiva istruzione e la trace registra l’evento di comunicazione.
+
+\begin{tcolorbox}[colback=black!2,colframe=black!35,boxrule=0.4pt,height=0.65\textheight]
+\begin{verbatim}
+Istruzione eseguita:
+  s.start -> w1.start
+
+Nuova configurazione:
+
+Control stack:
+  ip -> s.start -> w2.start;
+
+Store:
+  w1.start = start
+
+Race Memory:
+  <empty>
+
+Trace:
+  com s.start -> w1.start
+\end{verbatim}
+\end{tcolorbox}
+
+\clearpage
+
+\paragraph{Dopo il secondo passo.}
+Viene ora eseguita la comunicazione verso il secondo worker. Anche in questo caso il simulatore aggiorna lo store e registra l’evento nella trace.
+
+\begin{tcolorbox}[colback=black!2,colframe=black!35,boxrule=0.4pt,height=0.65\textheight]
+\begin{verbatim}
+Istruzione eseguita:
+  s.start -> w2.start
+
+Nuova configurazione:
+
+Control stack:
+  ip -> w1.r = 7;
+
+Store:
+  w1.start = start
+  w2.start = start
+
+Race Memory:
+  <empty>
+
+Trace:
+  com s.start -> w1.start
+  com s.start -> w2.start
+\end{verbatim}
+\end{tcolorbox}
+
+\clearpage
+
+\paragraph{Dopo il terzo passo.}
+Il primo worker produce ora il proprio contributo assegnando il valore costante \texttt{7} alla variabile \texttt{w1.r}. Lo store viene aggiornato e la trace registra l’evento di assegnamento.
+
+\begin{tcolorbox}[colback=black!2,colframe=black!35,boxrule=0.4pt,height=0.65\textheight]
+\begin{verbatim}
+Istruzione eseguita:
+  w1.r = 7
+
+Nuova configurazione:
+
+Control stack:
+  ip -> w2.r = 5;
+
+Store:
+  w1.start = start
+  w2.start = start
+  w1.r = 7
+
+Race Memory:
+  <empty>
+
+Trace:
+  com s.start -> w1.start
+  com s.start -> w2.start
+  asg w1.r = 7
+\end{verbatim}
+\end{tcolorbox}
+
+\clearpage
+
+\paragraph{Dopo il quarto passo.}
+Anche il secondo worker produce il proprio contributo, assegnando la costante \texttt{5} alla variabile \texttt{w2.r}. A questo punto lo store contiene entrambi i valori che parteciperanno alla race.
+
+\begin{tcolorbox}[colback=black!2,colframe=black!35,boxrule=0.4pt,height=0.65\textheight]
+\begin{verbatim}
+Istruzione eseguita:
+  w2.r = 5
+
+Nuova configurazione:
+
+Control stack:
+  ip -> race s[k] : w1.r , w2.r -> s.ans;
+
+Store:
+  w1.start = start
+  w2.start = start
+  w1.r = 7
+  w2.r = 5
+
+Race Memory:
+  <empty>
+
+Trace:
+  com s.start -> w1.start
+  com s.start -> w2.start
+  asg w1.r = 7
+  asg w2.r = 5
+\end{verbatim}
+\end{tcolorbox}
+
+\clearpage
+
+\paragraph{Dopo il quinto passo.}
+Viene infine eseguita l’istruzione di race. Il simulatore valuta i due contributi concorrenti \texttt{w1.r} e \texttt{w2.r} e aggiorna di conseguenza sia lo store sia la race memory. Supponiamo che il vincitore risulti \texttt{w1}: il valore \texttt{7} viene quindi scritto nella variabile target \texttt{s.ans}, mentre nella memoria delle race vengono registrate le informazioni sulla competizione appena risolta.
+
+\begin{tcolorbox}[colback=black!2,colframe=black!35,boxrule=0.4pt,height=0.65\textheight]
+\begin{verbatim}
+Istruzione eseguita:
+  race s[k] : w1.r , w2.r -> s.ans
+
+Nuova configurazione:
+
+Control stack:
+  ip -> fine del frammento
+
+Store:
+  w1.start = start
+  w2.start = start
+  w1.r = 7
+  w2.r = 5
+  s.ans = 7
+
+Race Memory:
+  s[k] -> winner=w1, loser=w2, vWinner=7, vLoser=5
+
+Trace:
+  com  s.start -> w1.start
+  com  s.start -> w2.start
+  asg  w1.r = 7
+  asg  w2.r = 5
+  race s[k] winner=w1 loser=w2 write s.ans=7
+\end{verbatim}
+\end{tcolorbox}
+
+Con questo esempio è stato mostrato il principio generale del modello di esecuzione: ad ogni passo la macchina astratta legge la configurazione corrente, seleziona l’istruzione puntata dal control stack, applica l’effetto operativo corrispondente e produce una nuova configurazione. L’esecuzione completa della coreografia è dunque semplicemente la successione di queste transizioni.
+
+Il modello di esecuzione descritto nella sezione precedente richiede una struttura che permetta al simulatore di determinare quale istruzione del programma debba essere eseguita ad ogni passo. Nel simulatore questo compito è svolto da una struttura esplicita di controllo citata in precedenza chiamata \textit{Control Stack}. Essa serve a rappresentare il contesto corrente dell’esecuzione.
+
+L’AST costruito dal front-end rappresenta il programma come una gerarchia di blocchi di istruzioni (\texttt{Block}) contenenti sequenze di \texttt{Stmt}. Per poter attraversare questa struttura durante la simulazione, il simulatore mantiene una pila di frame di esecuzione. Ogni frame descrive il blocco attualmente attivo e la posizione della prossima istruzione da eseguire al suo interno.
+
+La struttura utilizzata per rappresentare un frame è la seguente:
+
+\begin{tcolorbox}[colback=white,colframe=black!35,boxrule=0.4pt]
+\begin{lstlisting}
+struct BlockFrame {
+    const ast::Block* block = nullptr;
+    size_t ip = 0;
+    std::unordered_map<std::string, std::string> subst;
+
+    std::string procName;
+    ast::SourceRange callLoc;
+};
+\end{lstlisting}
+\end{tcolorbox}
+
+Il campo \texttt{block} identifica il blocco di istruzioni attualmente in esecuzione, mentre \texttt{ip} (\textit{instruction pointer}) indica la posizione della prossima istruzione all’interno del blocco. In questo modo il simulatore può accedere direttamente allo statement corrente e avanzare progressivamente all’interno della sequenza di istruzioni.
+
+Il campo \texttt{subst} rappresenta invece la sostituzione tra parametri formali e processi effettivi nelle chiamate di procedura. Quando una procedura viene invocata tramite un’istruzione \texttt{call}, i processi passati come argomenti vengono associati ai parametri della procedura e la sostituzione risultante viene memorizzata nel frame corrispondente. Questo permette al simulatore di risolvere correttamente i nomi dei processi all’interno del corpo della procedura.
+
+Gli ultimi due campi vengono utilizzati per gestire il ritorno dalla procedura e per registrare correttamente l’evento corrispondente nella trace.
+
+Durante la simulazione il control stack evolve dinamicamente in base alla struttura del programma. All’inizio dell’esecuzione viene inserito nella pila un frame relativo al blocco \texttt{main}.
+
+Quando il simulatore incontra una chiamata di procedura, viene creato un nuovo frame corrispondente al corpo della procedura invocata e questo frame viene inserito in cima alla pila. L’esecuzione prosegue quindi all’interno della procedura. Una volta terminato il blocco della procedura, il frame viene rimosso dalla pila e il controllo ritorna al frame precedente.
+
+La scelta di gestire le chiamate di procedura tramite una pila di frame, invece di affidare l’esecuzione alla ricorsione del linguaggio e quindi delegare parte dello stato della computazione allo stack del runtime, è stata fatta per rendere la configurazione della macchina completamente esplicita. In questo modo il simulatore mantiene il controllo diretto dello stato dell’esecuzione e può gestire in modo più semplice la produzione della trace degli eventi.
+
+Si è mostrato quindi come ad ogni passo la macchina astratta seleziona l’istruzione puntata dal \textit{control stack}, ne valuta l’effetto e aggiorna lo stato runtime della simulazione. L’effetto prodotto dipende ovviamente dal tipo costrutto: alcune istruzioni aggiornano lo store, altre modificano il flusso di controllo e altre, come i costrutti legati alle \textit{race}, coinvolgono anche la race memory. L’implementazione completa è disponibile nei file della directory \texttt{/src/sim} del repository del progetto \cite{rcparserrepo}.
+
+\section{Errori runtime e policy di risoluzione delle race}
+
+Come anticipato nel Capitolo~4, oltre agli errori lessicali, sintattici e strutturali, il tool produce anche errori che emergono solo durante l’esecuzione della simulazione.
+
+Nel simulatore questi errori vengono rappresentati tramite un’eccezione che associa al messaggio di errore anche la posizione corrispondente nel programma sorgente. L’implementazione di questo meccanismo è disponibile nel modulo runtime del progetto \cite{rcparserrepo}.
+
+Un caso interessante riguarda di errori sono quelli dei i costrutti legati alle race. Poiché \texttt{if (s[k])} e \texttt{discharge} dipendono dalle informazioni registrate nella \textit{race memory}, il simulatore verifica che tali informazioni siano presenti e coerenti con l’istruzione eseguita. 
+
+Ad esempio, nel seguente frammento il costrutto \texttt{discharge} tenta di recuperare il contributo del processo \texttt{w1}, anche se questo processo risulta vincitore della race:
+
+\begin{tcolorbox}[colback=white,colframe=black!35,boxrule=0.4pt]
+\begin{lstlisting}
+race s[k] : w1.r , w2.r -> s.ans;
+
+if (s[k]) {
+    discharge s[k] : w1 -> s.lost;
+}
+\end{lstlisting}
+\end{tcolorbox}
+
+In questo caso il simulatore rileva l’incoerenza e produce il seguente errore a runtime:
+
+\begin{tcolorbox}[colback=black!2,colframe=black!35,boxrule=0.4pt]
+\begin{verbatim}
+.\file.rc:11:8: runtime error:
+discharge expects loser 'w2', got 'w1'
+\end{verbatim}
+\end{tcolorbox}
+
+Un altro esempio si verifica quando un costrutto tenta di accedere a una race che non è stata ancora risolta. Ad esempio:
+
+\begin{tcolorbox}[colback=white,colframe=black!35,boxrule=0.4pt]
+\begin{lstlisting}
+discharge s[k] : w2 -> s.lost;
+race s[k] : w1.r , w2.r -> s.ans;
+\end{lstlisting}
+\end{tcolorbox}
+
+Poiché la race \texttt{s[k]} non è ancora stata eseguita, l’informazione richiesta non è disponibile e il simulatore segnala:
+
+\begin{tcolorbox}[colback=black!2,colframe=black!35,boxrule=0.4pt]
+\begin{verbatim}
+.\file.rc:5:4: runtime error: race 's[k]' not resolved
+\end{verbatim}
+\end{tcolorbox}
+
+Un ulteriore aspetto importante del simulatore riguarda la gestione delle policy di risoluzione delle race. Il linguaggio infatti tramite le race introduce un elemento di nondeterminismo. Per rendere questo comportamento eseguibile il simulatore supporta tre diverse policy:
+
+\begin{itemize}
+\item \texttt{left}, che seleziona sempre il contributo di sinistra;
+\item \texttt{right}, che seleziona sempre il contributo di destra;
+\item \texttt{random}, che sceglie il vincitore in modo pseudo-casuale.
+\end{itemize}
+
+Questa scelta è stata fatta perché permette di usare il simulatore sia in modo deterministico, permettendo di analizzare in modo controllato specifici scenari di esecuzione, sia in modo pseudo-casuale permettendo di osservare possibili evoluzioni alternative della stessa coreografia.
+
+Nel caso si usi utilizzi come policy quella random il generatore pseudo-casuale può essere inizializzato con un seed esplicito. Questo è stato fatto per permettere di ottenere esecuzioni riproducibili. Inoltre variando il seed è possibile esplorare diversi possibili esiti della race.
+
+L’implementazione delle policy di risoluzione e dei controlli runtime è disponibile nei file del simulatore e del runtime del repository del progetto, in particolare nelle directory \texttt{/src/sim} e \texttt{/src/runtime} \cite{rcparserrepo}.
+
+\section{Esempio completo di simulazione}
+
+Per concludere la descrizione del simulatore in questa sezione viene considerato un esempio completo di esecuzione.
+
+Consideriamo il programma introdotto nei capitoli precedenti in cui un client \texttt{c} invia una richiesta a un server \texttt{s}. Due worker, \texttt{w1} e \texttt{w2}, producono due possibili risultati in modo concorrente. Il server utilizza una \texttt{race} per determinare quale contributo debba essere considerato vincente. Il valore vincente viene inviato al client mentre il contributo perdente viene recuperato successivamente tramite il costrutto \texttt{discharge}.
+La simulazione produce il seguente output:
+\begin{tcolorbox}[colback=black!2,colframe=black!35,boxrule=0.4pt]
+\begin{verbatim}
+init @<init>:0:0 w1.req = 7
+init @<init>:0:0 w2.req = 5
+
+call @file.rc:20:4 Request(c,w1,w2,s)
+
+asg @file.rc:3:4 w1.r = 7
+asg @file.rc:4:4 w2.r = 5
+
+race @file.rc:6:4 s[k] winner=w1 loser=w2 write s.ans=7
+ifRace @file.rc:8:4 s[k] winner=w1 -> then
+
+com @file.rc:9:8 s.ans = 7 -> c.res
+sel @file.rc:10:8 s -> c [FromW1]
+
+dis @file.rc:11:8 s[k] loser=w2 write s.lost=5
+ret @file.rc:20:4 Request
+
+
+Final Store Sigma:
+  c.res = 7
+  s.ans = 7
+  s.lost = 5
+
+Final Races M:
+  s[k]: left=w1, right=w2, winner=w1, loser=w2,
+        vWin=7, vLose=5, discharged=true
+\end{verbatim}
+\end{tcolorbox}
+
+Supponiamo che i due worker dispongano dei valori iniziali \texttt{w1.req = 7} e \texttt{w2.req = 5}. Nel simulatore questi valori vengono forniti esplicitamente come configurazione iniziale dello store tramite le opzioni \texttt{--init} della riga di comando.
+
+Questo esempio mostra come il simulatore renda osservabile l’evoluzione della coreografia: la trace descrive la sequenza delle azioni eseguite, lo store finale riassume l’effetto della computazione sui valori del programma e la memoria delle race conserva l’esito delle competizioni.
+
+La trace descrive l’evoluzione della simulazione. I primi eventi \texttt{init} non corrispondono a istruzioni del programma ma sono generati dal simulatore quando applica allo store iniziale i valori passati tramite le opzioni \texttt{--init} della riga di comando. In questo caso essi introducono nello store i valori iniziali disponibili per i due worker.
+
+L’esecuzione inizia con l’evento che indica l’ingresso nella procedura \texttt{Request}:
+
+\begin{tcolorbox}[colback=black!2,colframe=black!35,boxrule=0.4pt]
+\begin{verbatim}
+call Request(c,w1,w2,s)
+\end{verbatim}
+\end{tcolorbox}
+
+Dal punto di vista del modello di esecuzione questo evento corrisponde alla creazione di un nuovo frame nel \textit{control stack}, che rappresenta il contesto della procedura invocata.
+
+I due eventi successivi costruiscono i contributi concorrenti prodotti dai worker. Questi passi aggiornano lo store assegnando alle variabili dei worker i valori che verranno confrontati nella \texttt{race}:
+
+\begin{tcolorbox}[colback=black!2,colframe=black!35,boxrule=0.4pt]
+\begin{verbatim}
+asg w1.r = 7
+asg w2.r = 5
+\end{verbatim}
+\end{tcolorbox}
+
+Successivamente si verifica l’evento di \texttt{race}:
+
+\begin{tcolorbox}[colback=black!2,colframe=black!35,boxrule=0.4pt]
+\begin{verbatim}
+race s[k] winner=w1 loser=w2 write s.ans=7
+\end{verbatim}
+\end{tcolorbox}
+
+Qui il simulatore valuta i due contributi concorrenti e determina il vincitore secondo la policy di risoluzione configurata. In questo caso il valore prodotto da \texttt{w1} risulta vincente. Il simulatore scrive quindi il valore \texttt{7} nella variabile \texttt{s.ans} e registra l’esito della competizione nella \textit{race memory}. Quest’ultima conserva informazioni strutturate sulla race tra cui: i partecipanti, il vincitore, il perdente e i valori associati ai due contributi.
+
+Il passo successivo mostra come il costrutto \texttt{if (s[k])} venga valutato consultando la \textit{race memory}. 
+
+\begin{tcolorbox}[colback=black!2,colframe=black!35,boxrule=0.4pt]
+\begin{verbatim}
+ifRace s[k] winner=w1 -> then
+\end{verbatim}
+\end{tcolorbox}
+ 
+Nel ramo selezionato il server invia al client il valore vincente:
+
+\begin{tcolorbox}[colback=black!2,colframe=black!35,boxrule=0.4pt]
+\begin{verbatim}
+com s.ans = 7 -> c.res
+\end{verbatim}
+\end{tcolorbox}
+
+Subito dopo viene eseguita una selezione
+
+\begin{tcolorbox}[colback=black!2,colframe=black!35,boxrule=0.4pt]
+\begin{verbatim}
+sel s -> c [FromW1]
+\end{verbatim}
+\end{tcolorbox}
+
+Infine il costrutto \texttt{discharge} recupera il contributo perdente dalla \textit{race memory}:
+
+\begin{tcolorbox}[colback=black!2,colframe=black!35,boxrule=0.4pt]
+\begin{verbatim}
+dis s[k] loser=w2 write s.lost=5
+\end{verbatim}
+\end{tcolorbox}
+
+Lo store finale riassume l’effetto complessivo dell’esecuzione:
+
+\begin{itemize}
+\item \texttt{c.res = 7} rappresenta il risultato inviato al client;
+\item \texttt{s.ans = 7} contiene il valore vincente della race;
+\item \texttt{s.lost = 5} contiene il contributo perdente recuperato tramite \texttt{discharge}.
+\end{itemize}
+
+Lo stato finale della \textit{race memory} conserva una descrizione strutturata della competizione:
+
+\begin{tcolorbox}[colback=black!2,colframe=black!35,boxrule=0.4pt]
+\begin{verbatim}
+s[k]: left=w1, right=w2, winner=w1, loser=w2,
+      vWin=7, vLose=5, discharged=true
+\end{verbatim}
+\end{tcolorbox}
+

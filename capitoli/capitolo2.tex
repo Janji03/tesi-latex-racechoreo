@@ -26,7 +26,7 @@ Il costrutto base delle coreografie è la comunicazione globale, che indica che 
 
 \subsection*{Race}
 
-Riprendiamo ora l’esempio citato nel Capitolo 1: un client \texttt{c} invia una richiesta a un server \texttt{s}, e due worker \texttt{w1} e \texttt{w2} competono per fornire una risposta.
+Riprendiamo ora l’esempio citato nel Capitolo 1: si supponga che un client \texttt{c} invia una richiesta a un server \texttt{s}, e due worker \texttt{w1} e \texttt{w2} competono per fornire una risposta.
 
 \begin{tcolorbox}[
 colback=white,
@@ -36,7 +36,7 @@ arc=1mm,
 left=1.5mm,right=1.5mm,top=0.8mm,bottom=0.8mm
 ]
 \begin{lstlisting}
-c.req -> s.req;
+...
 w1.r = req;
 w2.r = req;
 race s[k] : w1.r , w2.r -> s.ans;

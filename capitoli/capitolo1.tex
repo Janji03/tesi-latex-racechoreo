@@ -5,7 +5,7 @@ La progettazione di sistemi distribuiti richiede di coordinare più processi ind
 La progettazione di questi sistemi presenta difficoltà strutturali. Nella letteratura sui sistemi concorrenti e distribuiti sono noti diversi problemi. I principali sono:
 
 \begin{itemize}
-\item mismatch nelle comunicazioni: ovvero quando un processo invia un messaggio che non viene ricevuto;
+\item mismatch nelle comunicazioni: ovvero quando un processo tenta di inviare un messaggio ma nessun processo nel programma è definito per riceverlo e quindi si ha una comunicazione nella coreografia che non è bilanciata da una corrispondente azione di ricezione.
 \item deadlock dovuti a specifiche incoerenti tra i partecipanti;
 \end{itemize}
 
@@ -104,4 +104,4 @@ Affronta il passaggio dalla sintassi astratta alla sintassi concreta, la quale v
 Descrive l’implementazione del front-end del tool, includendo la costruzione del parser tramite ANTLR, la generazione delle strutture sintattiche del programma e le fasi di validazione ed elaborazione effettuate prima della simulazione.
 
 \paragraph{Capitolo 5}
-Presenta l’implementazione del simulatore.
+Presenta l’implementazione del simulatore, descrivendo la macchina astratta che esegue i programmi, le strutture runtime utilizzate e alcuni esempi di esecuzione del linguaggio.

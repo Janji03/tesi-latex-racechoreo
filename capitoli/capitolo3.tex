@@ -54,17 +54,28 @@ Nel primo caso la condizione dipende dalla valutazione locale di un’espression
 \subsection*{Espressioni semplici}
 
 Le espressioni del linguaggio sono volutamente limitate a valori letterali o identificatori. Non sono presenti operatori aritmetici poiché il focus del linguaggio è descrivere interazioni tra processi piuttosto che calcoli locali.
+
 \section{Sintassi concreta attraverso un esempio}
+
 Per illustrare la sintassi concreta del linguaggio Racing Choreographies si riprende l'esempio completo di programma introdotto precedentemente che utilizza i costrutti del linguaggio.
-Il programma descrive una semplice interazione tra quattro processi: un client \texttt{c}, due worker \texttt{w1} e \texttt{w2}, e un server \texttt{s}. Il client invia una richiesta al server; i due worker ricevono la richiesta e competono per fornire una risposta tramite una \texttt{race}. Il valore prodotto dal worker vincitore viene inviato al client, mentre il valore del worker perdente viene successivamente recuperato tramite il costrutto di \texttt{discharge}.
-Così è come appare il programma completo secondo la sintassi concreta:
-\begin{lstlisting}
+
+Il programma descrive una interazione tra quattro processi: un client \texttt{c}, due worker \texttt{w1} e \texttt{w2}, e un server \texttt{s}. Il server avvia i due worker tramite un messaggio di attivazione. I worker producono quindi due possibili contributi e competono per fornire una risposta tramite una \texttt{race}. Il valore prodotto dal worker vincitore viene inviato al client, mentre il valore del worker perdente viene successivamente recuperato tramite il costrutto di \texttt{discharge}.
+
+Poiché il linguaggio non prevede operatori aritmetici né funzioni di calcolo, i valori prodotti dai worker sono stati rappresentati per comodità come costanti numeriche assegnate localmente.
+
+Da notare come in questo esempio le select non sono strettamente necessarie poiché il comportamento del client è identico nei due rami ma sono state inserite solo per rendere esplicito quale worker abbia prodotto il risultato.
+
+
+Così appare il programma completo secondo la sintassi concreta:
+
+\newpage
+
+\begin{lstlisting}[caption={}, label={}, float, floatplacement=H]
 proc Request(c, w1, w2, s) {
-
-    c.req -> s.req;
-
-    w1.r = req;
-    w2.r = req;
+    s.start -> w1.start;
+    s.start -> w2.start;
+    w1.r = 7;
+    w2.r = 5;
 
     race s[k] : w1.r , w2.r -> s.ans;
 
@@ -88,26 +99,27 @@ Il programma è composto da una definizione di procedura e da una coreografia pr
 
 La procedura \texttt{Request} descrive l’interazione tra i quattro processi coinvolti, mentre il blocco \texttt{main} rappresenta il punto di ingresso dell’esecuzione del programma e invoca la procedura tramite la keyword \texttt{call}.
 
-La prima istruzione
+Le prime istruzioni
 
 \begin{tcolorbox}[colback=white,colframe=black!35,boxrule=0.4pt]
 \begin{lstlisting}
-c.req -> s.req;
+s.start -> w1.start;
+s.start -> w2.start;
 \end{lstlisting}
 \end{tcolorbox}
 
-rappresenta una comunicazione globale: il processo \texttt{c} invia al processo \texttt{s} il valore della variabile \texttt{req}, che viene memorizzato nella variabile \texttt{req} del server.
+rappresentano comunicazioni globali: il processo \texttt{s} invia un messaggio di attivazione ai due worker \texttt{w1} e \texttt{w2}. Il valore trasmesso viene memorizzato nelle rispettive variabili \texttt{start} dei worker.
 
 Le istruzioni successive
 
 \begin{tcolorbox}[colback=white,colframe=black!35,boxrule=0.4pt]
 \begin{lstlisting}
-w1.r = req;
-w2.r = req;
+w1.r = 7;
+w2.r = 5;
 \end{lstlisting}
 \end{tcolorbox}
 
-sono assegnamenti locali, che permettono ai worker di preparare il valore che verrà utilizzato nella competizione.
+sono assegnamenti locali, che permettono ai worker di produrre i valori che verranno utilizzati nella competizione.
 
 La competizione è espressa dal costrutto di \texttt{race}:
 

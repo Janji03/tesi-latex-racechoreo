@@ -2,23 +2,25 @@
 
 Il contributo di questa tesi è l’implementazione di un tool per l’esecuzione di programmi scritti nel linguaggio \textit{Racing Choreographies}. Il sistema realizzato comprende due componenti principali: un front-end del linguaggio, responsabile dell’analisi lessicale e grammaticale dei programmi e della costruzione della loro rappresentazione interna (AST), e un simulatore che esegue i programmi secondo la semantica operazionale presentata nel Capitolo~2. 
 
-L’architettura del tool è organizzata come una pipeline di trasformazioni successive che partono dal codice sorgente del programma e producono rappresentazioni via via più strutturate. Il flusso generale del sistema è rappresentato dal seguente schema:
+L’architettura del tool è organizzata come una pipeline di trasformazioni successive che partono dal codice sorgente del programma e producono rappresentazioni via via più strutturate.
 
-\begin{center}
+\begin{figure}[htbp]
+\centering
+\resizebox{0.78\textwidth}{!}{%
 \begin{tikzpicture}[
-    node distance=0.9cm,
+    node distance=0.75cm,
     artifact/.style={
         draw,
         rounded corners,
-        minimum width=4.8cm,
-        minimum height=0.95cm,
+        minimum width=4.2cm,
+        minimum height=0.8cm,
         align=center
     },
     process/.style={
         draw,
         rectangle,
-        minimum width=4.2cm,
-        minimum height=0.85cm,
+        minimum width=3.8cm,
+        minimum height=0.75cm,
         align=center,
         fill=gray!10
     },
@@ -27,7 +29,7 @@ L’architettura del tool è organizzata come una pipeline di trasformazioni suc
         draw,
         dashed,
         rounded corners,
-        inner sep=0.35cm
+        inner sep=0.3cm
     }
 ]
 
@@ -53,8 +55,11 @@ L’architettura del tool è organizzata come una pipeline di trasformazioni suc
 \node[groupbox, fit=(antlr)(cst)(builder)(ast)(validator)(vast),
       label=right:{Front-end}] {};
 
-\end{tikzpicture}
-\end{center}
+\end{tikzpicture}%
+}
+\caption{Pipeline generale del tool}
+\label{fig:pipeline-tool}
+\end{figure}
 
 Nella prima fase il codice sorgente del programma viene passato in input a un \textit{lexer}, che produce una sequenza di tokens. Questa sequenza viene poi fornita in input a un \textit{parser}, il quale costruisce un \textit{Concrete Syntax Tree} (CST), ovvero una rappresentazione ad albero che riflette fedelmente la struttura sintattica del programma secondo la grammatica del linguaggio, includendo tutti i dettagli derivanti dalle regole grammaticali.
 
@@ -63,6 +68,8 @@ Successivamente, il CST viene trasformato in un \textit{Abstract Syntax Tree} (A
 Una volta costruito l’AST, il tool esegue una fase di validazione che verifica alcune proprietà strutturali dei programmi. Se il programma risulta valido, l’AST può essere utilizzato dal simulatore (Capitolo~5) per eseguire la coreografia secondo la semantica operazionale vista nel Capitolo~2.
 
 In questo capitolo viene descritto il front-end del tool.
+
+Il flusso generale del sistema è rappresentato nella Figura~\ref{fig:pipeline-tool}.
 
 \section{Architettura del front-end}
 
@@ -145,22 +152,22 @@ Consideriamo ora il \textit{file.rc} del programma dell'esempio introdotto in pr
 > rc_parser ast file.rc
 \end{verbatim}
 \end{tcolorbox}
-
 L’output relativo al programma di esempio è il seguente:
-
-\begin{samepage}
 \begin{tcolorbox}[colback=black!2,colframe=black!35,boxrule=0.4pt]
+\small
 \begin{verbatim}
 Program
   Procedures (1)
     ProcDef Request(c,w1,w2,s)
-      Block (5 stmt)
+      Block (6 stmt)
         InteractionStmt
-          Comm c.req -> s.req
+          Comm s.start -> w1.start
         InteractionStmt
-          Assign w1.r = req
+          Comm s.start -> w2.start
         InteractionStmt
-          Assign w2.r = req
+          Assign w1.r = 7
+        InteractionStmt
+          Assign w2.r = 5
         InteractionStmt
           Race s[k] : w1.r , w2.r -> s.ans
         IfRace (s[k])
@@ -185,11 +192,12 @@ Program
       Call Request(c,w1,w2,s)
 \end{verbatim}
 \end{tcolorbox}
-\end{samepage}
 
-L'implementazione completa dell'AST si trova nella directory \texttt{/src} nel repository del progetto \cite{rcparserrepo}. DI seguito vengono mostrate sono le principali parti di codice per descrivere le scelte progettuali che sono state fatte.
+L'implementazione completa dell'AST si trova nella directory \texttt{/src} nel repository del progetto \cite{rcparserrepo}. Di seguito vengono mostrate sono le principali parti di codice per descrivere le scelte progettuali che sono state fatte.
 
 Alla radice dell’albero si trova il nodo \texttt{Program}, che contiene l’insieme delle definizioni di procedura e il blocco principale \texttt{Main}. Questa organizzazione riflette direttamente la struttura dei programmi del linguaggio.
+
+In tutte le strutture dell’AST compare inoltre il campo \texttt{SourceRange loc}. Questo campo rappresenta la posizione del costrutto nel programma sorgente e viene utilizzato per associare ai nodi dell’albero le informazioni di posizione (file, riga e colonna). In questo modo il tool può produrre messaggi di errore che fanno riferimento direttamente al codice sorgente.
 
 \begin{tcolorbox}[colback=white,colframe=black!35,boxrule=0.4pt]
 \begin{lstlisting}
@@ -229,11 +237,11 @@ Gli statement del linguaggio comprendono diverse forme sintattiche, tra cui inte
 
 Questa soluzione consente di rappresentare in modo tipizzato le diverse forme che uno statement può assumere evitando di utilizzare gerarchie di classi.
 
-L’AST non viene generato direttamente dal parser. Il parser di ANTLR produce infatti un \textit{parse tree} che riflette la grammatica del linguaggio ma la costruzione dell’AST consiste in una trasformazione a partire dal parse tree.
+L’AST non viene generato direttamente dal parser. Il parser di ANTLR produce infatti un CST che riflette la grammatica del linguaggio ma la costruzione dell’AST consiste in una trasformazione a partire dal CST.
 
 Questa trasformazione è implementata tramite il meccanismo dei \textit{visitor} fornito da ANTLR. In particolare, la classe \texttt{AstBuilderVisitor} è un’estensione della classe \texttt{RacingChoreoBaseVisitor} generata automaticamente da ANTLR, nella quale vengono ridefiniti i metodi di visita necessari per costruire i nodi dell’AST.
 
-Il tool definisce una classe \texttt{AstBuilderVisitor} che attraversa ricorsivamente il parse tree e costruisce i nodi dell’AST.
+Il tool definisce una classe \texttt{AstBuilderVisitor} che attraversa ricorsivamente il CST e costruisce i nodi dell’AST.
 
 \begin{tcolorbox}[colback=white,colframe=black!35,boxrule=0.4pt]
 \begin{lstlisting}
@@ -270,9 +278,6 @@ struct Race {
 \end{tcolorbox}
 
 Questa struttura rappresenta esplicitamente i componenti semantici della \texttt{race}: l’identificatore della competizione, le due espressioni concorrenti e la variabile del processo ricevente.
-
-Da notare come durante la costruzione dell’AST vengono propagate le informazioni di localizzazione del sorgente. Ogni nodo contiene infatti un campo \texttt{SourceRange} che registra la posizione della corrispondente porzione di codice nel file originale. Questa informazione non è necessaria per la semantica del linguaggio ma  è utile perchèp consente di produrre messaggi di errore più precisi nelle fasi successive del tool.
-
 \section{Validazione del programma}
 
 Una volta costruito l’\textit{Abstract Syntax Tree}, il front-end del tool esegue una fase di validazione del programma. Questa fase ha lo scopo di verificare alcune proprietà strutturali del programma.
@@ -296,8 +301,7 @@ Il validatore verifica che i processi utilizzati nelle comunicazioni, nelle sele
 Per i costrutti \texttt{race}, \texttt{if (s[k])} e \texttt{discharge}, viene controllata la coerenza dell’identificatore della race e del processo associato, in modo da garantire che tali riferimenti siano utilizzati in modo consistente all’interno della coreografia.
 
 \item \textbf{Presenza delle informazioni necessarie per l’esecuzione.}  
-Viene verificato che la struttura del programma sia completa dal punto di vista esecutivo, ad esempio controllando la presenza del blocco \texttt{main}, che rappresenta il punto di ingresso dell’esecuzione.
-
+Il validatore verifica che il programma contenga gli elementi minimi necessari per l’esecuzione. In particolare controlla la presenza del blocco \texttt{main}, che il programma sia composto correttamente dal punto di vista strutturale (ovvero zero o più definizioni di procedura seguite dalla coreografia principale) e che le definizioni di procedura siano coerenti evitando duplicazioni di nomi tra procedure.
 \end{itemize}
 
 Questi controlli sono implementati nel modulo \texttt{Validation} del front-end, che attraversa l’AST e verifica le proprietà richieste. In caso di errore, il validatore produce un messaggio associato alla posizione corrispondente nel file sorgente sfruttando le informazioni di localizzazione propagate durante la costruzione dell’AST.
